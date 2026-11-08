@@ -37,6 +37,7 @@ A monthly review tool for a Plex library stored on an external drive. It flags m
 - **Local web review page:** a single page on localhost to review candidates and choose keep, snooze, or delete. Decisions are stored in a local SQLite database.
 - **Soon-to-be-removed list:** a Plex collection named `Soon to be removed`, holding every title that is a candidate and is within its 30-day countdown. The tool adds a title when it becomes a candidate and removes it when the title is kept, snoozed, or deleted. The collection is promoted to the library's Recommended page if the Plex version supports it. The local review page remains the full list, with sizes, dates, the rule that flagged each title, and days remaining.
 - **Deletion timing:** a candidate enters a 30-day countdown when first flagged. The countdown is shown in the review page and the collection. Titles can be kept or snoozed at any point during the countdown. Once it expires, the title is queued for deletion, subject to the dry-run and confirmation steps.
+- **One collection per library:** the tool maintains a separate collection in each library section (Movies and TV Shows), each holding only items of that section's type. Each is promoted within its own library. Collections are addressed by section key, not by name. Plex appears to merge or filter collections that share a name across libraries, so names should differ (for example "Leaving Soon: Movies" and "Leaving Soon: TV").
 
 ## Current state
 
