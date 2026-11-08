@@ -78,7 +78,7 @@ function tmdbIdFrom(array $item): ?int
 }
 
 /** Sum file sizes (bytes) from a Plex item's Media/Part list. */
-function sizeOf(array $item): int
+function mediaSizeBytes(array $item): int
 {
     $total = 0;
     foreach ($item['Media'] ?? [] as $media) {
@@ -131,12 +131,12 @@ foreach ($sections as $section) {
             // Shows: total size comes from all episodes.
             $leaves = plex("/library/metadata/{$item['ratingKey']}/allLeaves")['MediaContainer']['Metadata'] ?? [];
             foreach ($leaves as $ep) {
-                $size += sizeOf($ep);
+                $$size += mediaSizeBytes($ep);
             }
             $epTotal = $item['leafCount'] ?? '';
             $epSeen  = $item['viewedLeafCount'] ?? 0;
         } else {
-            $size = sizeOf($item);
+            $size = mediaSizeBytes($item);
         }
 
         $tmdbStatus = $tmdbLastAir = $tmdbInProd = '';
