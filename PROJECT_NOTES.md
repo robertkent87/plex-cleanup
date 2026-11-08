@@ -35,6 +35,8 @@ A monthly review tool for a Plex library stored on an external drive. It flags m
 - **Deletion:** through Radarr/Sonarr where the title is managed there, so that they don't re-download it. Titles not in Radarr/Sonarr are deleted directly over the network share, after a confirmation step.
 - **Dry run first:** deletion features must support a dry-run mode that reports what would be removed and how much space it frees.
 - **Local web review page:** a single page on localhost to review candidates and choose keep, snooze, or delete. Decisions are stored in a local SQLite database.
+- **Soon-to-be-removed list:** a Plex collection named `Soon to be removed`, holding every title that is a candidate and is within its 30-day countdown. The tool adds a title when it becomes a candidate and removes it when the title is kept, snoozed, or deleted. The collection is promoted to the library's Recommended page if the Plex version supports it. The local review page remains the full list, with sizes, dates, the rule that flagged each title, and days remaining.
+- **Deletion timing:** a candidate enters a 30-day countdown when first flagged. The countdown is shown in the review page and the collection. Titles can be kept or snoozed at any point during the countdown. Once it expires, the title is queued for deletion, subject to the dry-run and confirmation steps.
 
 ## Current state
 
@@ -49,11 +51,14 @@ A monthly review tool for a Plex library stored on an external drive. It flags m
 3. Build the rule engine that reads the Plex data and applies the rules, skipping anything labelled `keep` or with a future snooze date.
 4. Add the SQLite decisions store.
 5. Build the local review page.
-6. Add Radarr/Sonarr deletion, dry-run first.
-7. Schedule the monthly run.
+6. Add the Plex collection sync: create or update the `Soon to be removed` collection to match the current candidates, and check whether Recommended promotion is available on this Plex version.
+7. Add Radarr/Sonarr deletion, dry-run first.
+8. Schedule the monthly run.
 
 ## Open questions
 
 - Whether to write the `keep` label to Plex from the review page, or only read it.
 - Exact behaviour for shows that are partly watched.
 - Whether Plex `addedAt` values are reliable after file moves.
+- Whether the Plex version on this server supports promoting a collection to Recommended, and where it then appears.
+- Whether a title that is kept during the countdown should be locked out of future candidate checks, or simply reset.
