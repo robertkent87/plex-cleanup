@@ -1,0 +1,28 @@
+# Dependencies
+/vendor/
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+
+# Generated reports and local data
+*.csv
+*.sqlite
+*.sqlite3
+*.db
+
+# Logs and cache
+*.log
+.cache/
+.phpunit.result.cache
+
+# Editor and OS files
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Composer local artefacts
+composer.phar
