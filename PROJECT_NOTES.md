@@ -68,21 +68,21 @@ A monthly review tool for a Plex library stored on an external drive. It flags m
 - Queue sync (2026-11-09, step 4): `src/queue.php` is the only code that changes Plex. It only adds/removes Leaving Soon membership and `keep`/`queued-` labels; it never deletes media. Every action is planned from Plex's current state (preview), applied only when `dry_run` is false, then re-read from Plex to confirm, and the saved report is patched so the page updates without regenerating. Labels are added with the existing labels included (Plex replaces the list) and removed with the `label[].tag.tag-` form. The review page has checkboxes, select-all-shown, a bulk bar (Queue selected / Keep selected), per-row Queue and Keep buttons, a Sync labels button, and a preview screen with Apply; forms carry a session token so other websites can't submit to it. `sync.php` (`--dry-run` to preview) reconciles labels with collections and never queues titles. Tested for real by the user on 2026-11-09 (adding to a collection and adding a label with `dry_run` false): works as expected. `dry_run` is back to true as the committed default.
 - Deletion (2026-11-09, step 6): `src/delete.php`. New verdict "Due for deletion"; Delete buttons on due rows and in the bulk bar; a move-to-trash preview listing every file with sizes, warnings and refused titles; typed confirmation; a Trash card and Review trash screen with typed confirmation to empty old batches. Write, move and delete on the share were tested from PHP (the web server runs as the same Windows user). Tested in dry run only: guards, path mapping, refused titles, and a plan built as if 40 days had passed (The Brutalist: one 15.3 GB file). Real deletion tested by the user on 2026-11-09 with `countdown_days` 0: The Brutalist (16.4 GB) was moved to the trash, its empty folder removed, the move logged, and the title disappeared from Plex. `countdown_days` may be 0 (titles are due as soon as they are queued); the committed default stays 30, with `dry_run` true.
 - The CSV output has not yet been fully checked against the actual library. About 600 of 852 movies still show as never watched, even with full history.
-- Design agreed: Leaving Soon collections per library, `queued-YYYY-MM-DD` and `keep` labels, deletion direct from the share, and a localhost review page.
+- Home screen promotion (2026-11-09, step 7): done by hand in Plex for all three Leaving Soon collections. Nothing is needed in the tool; it keeps the collections' contents up to date and Plex shows them where they are promoted.
+- Design agreed: Leaving Soon collections per library, `queued-YYYY-MM-DD` and `keep` labels, deletion via a trash folder on the share, and a localhost review page.
+- All planned steps are complete and merged to `main` (2026-11-09).
 
 ## Next steps
 
-1. Check `report.csv` against the Plex library: added dates, blank last-viewed values, TMDB matches, and show sizes.
-2. Add a config file for the thresholds, the 30-day countdown, and TMDB rules.
-3. Build the rule engine that reads Plex data and applies the rules, skipping anything labelled `keep`.
-4. Build the queue sync: add and remove titles from the Leaving Soon collections, and manage the `queued-` and `keep` labels. Implement dry-run here first.
-5. Build the local review page on top of the rule engine and queue sync, with the candidates table, due-for-deletion section, row actions, and run button.
-6. Add the deletion step: delete files from the share and refresh the Plex library, dry-run first.
-7. Check whether Recommended promotion is available on this Plex version, and promote the Leaving Soon collections if so.
+1. Check the report against the Plex library: added dates, blank last-viewed values, TMDB matches, and show sizes. Still open; worth doing before the first real round of queueing, since about 600 movies show as never watched.
+2. ~~Config file~~: done 2026-11-09.
+3. ~~Rule engine~~: done 2026-11-09.
+4. ~~Queue sync~~: done 2026-11-09.
+5. ~~Review page~~: done 2026-11-09.
+6. ~~Deletion~~: done 2026-11-09 (move to trash, empty after 14 days).
+7. ~~Promote the Leaving Soon collections~~: done by hand in Plex 2026-11-09; no tool work needed.
 8. ~~Schedule monthly runs~~: dropped 2026-11-09; everything is run manually.
 
 ## Open questions
 
 - Whether Plex `addedAt` values are reliable after file moves. The current added dates are spread across years, which looks healthy; spot-check a few long-held titles.
-- Whether Plex on this server supports promoting a collection to Recommended, and where it then appears.
-- Whether the TV library UI shows collections on this Plex version, and where promoted TV collections appear.
