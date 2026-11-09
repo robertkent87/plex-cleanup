@@ -64,55 +64,151 @@ function gb(float $v): string
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Plex Cleanup</title>
 <style>
-  body { font: 14px/1.4 system-ui, sans-serif; margin: 16px; color: #222; background: #fff; }
-  h1 { font-size: 20px; margin: 0 0 8px; }
-  .bar { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; margin: 12px 0; }
-  .muted { color: #666; }
-  .error { background: #fde8e8; border: 1px solid #e0a0a0; padding: 8px 12px; }
-  .ok { background: #e8f5e8; border: 1px solid #a0d0a0; padding: 8px 12px; }
-  .stats span { margin-right: 16px; }
+  :root {
+    color-scheme: dark;
+    --bg: #111317;
+    --surface: #1a1d23;
+    --surface-2: #22262e;
+    --border: #2e333d;
+    --text: #e4e6eb;
+    --muted: #8b929e;
+    --accent: #e5a00d;
+    --accent-text: #1a1206;
+    --link: #f0b84a;
+    --ok-bg: #15301f;   --ok-border: #2a6a40;   --ok-text: #8fdba8;
+    --err-bg: #3a1618;  --err-border: #7a2c30;  --err-text: #f2a3a6;
+    --badge-green: #1f3a2a; --badge-green-text: #8fdba8;
+    --badge-blue: #1c2d45;  --badge-blue-text: #9cc3f5;
+    --badge-grey: #2a2e36;  --badge-grey-text: #aab0bb;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+    color: var(--text);
+    background: var(--bg);
+  }
+  main { max-width: 1400px; margin: 0 auto; padding: 24px 16px 48px; }
+  a { color: var(--link); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .muted { color: var(--muted); }
+
+  /* Header */
+  header { display: flex; flex-wrap: wrap; gap: 12px 24px; align-items: center; justify-content: space-between; margin-bottom: 20px; }
+  h1 { font-size: 22px; font-weight: 600; margin: 0; letter-spacing: .2px; }
+  h1 span { color: var(--accent); }
+  .actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+
+  /* Controls */
+  button, .button {
+    font: inherit; font-weight: 600; cursor: pointer;
+    padding: 8px 16px; border-radius: 6px; border: 1px solid transparent;
+    background: var(--accent); color: var(--accent-text);
+  }
+  button:hover { filter: brightness(1.08); }
+  button:disabled { cursor: progress; opacity: .7; }
+  .button.secondary { background: var(--surface-2); color: var(--text); border-color: var(--border); font-weight: 500; }
+  .button.secondary:hover { text-decoration: none; border-color: var(--muted); }
+  input[type="search"], select {
+    font: inherit; color: var(--text); background: var(--surface-2);
+    border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px;
+  }
+  input[type="search"] { width: 220px; }
+  input:focus, select:focus, button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  input[type="checkbox"] { accent-color: var(--accent); }
+  label { display: inline-flex; gap: 6px; align-items: center; color: var(--muted); }
+
+  /* Messages */
+  .msg { padding: 10px 14px; border-radius: 6px; border: 1px solid; margin: 0 0 16px; }
+  .ok { background: var(--ok-bg); border-color: var(--ok-border); color: var(--ok-text); }
+  .error { background: var(--err-bg); border-color: var(--err-border); color: var(--err-text); }
+
+  /* Summary cards */
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-bottom: 20px; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; }
+  .card h2 { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); margin: 0 0 6px; }
+  .card .big { font-size: 24px; font-weight: 600; }
+  .card .sub { color: var(--muted); font-size: 13px; }
+
+  /* Filters */
+  .filters { display: flex; flex-wrap: wrap; gap: 10px 20px; align-items: center; margin-bottom: 12px; }
+  #f-count { margin-left: auto; }
+
+  /* Table */
+  .wrap { overflow: auto; max-height: calc(100vh - 120px); background: var(--surface); border: 1px solid var(--border); border-radius: 8px; }
   table { border-collapse: collapse; width: 100%; }
-  th, td { padding: 4px 8px; border-bottom: 1px solid #ddd; text-align: left; white-space: nowrap; }
-  th { position: sticky; top: 0; background: #f4f4f4; cursor: pointer; user-select: none; }
+  th, td { padding: 8px 12px; text-align: left; white-space: nowrap; }
+  th {
+    position: sticky; top: 0; z-index: 1;
+    background: var(--surface-2); color: var(--muted);
+    font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .5px;
+    border-bottom: 1px solid var(--border); cursor: pointer; user-select: none;
+  }
+  th:hover { color: var(--text); }
+  th[data-dir] { color: var(--accent); }
   th[data-dir="asc"]::after { content: " ▲"; }
   th[data-dir="desc"]::after { content: " ▼"; }
-  td.num, th.num { text-align: right; }
-  td.title { white-space: normal; min-width: 200px; }
-  tr:hover td { background: #fafafa; }
-  .wrap { overflow-x: auto; }
+  td { border-bottom: 1px solid var(--border); }
+  tbody tr:nth-child(even) td { background: rgba(255, 255, 255, .015); }
+  tbody tr:hover td { background: var(--surface-2); }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  td.size { font-weight: 600; }
+  td.title { white-space: normal; min-width: 220px; font-weight: 500; }
+  td.title a { color: var(--text); }
+  td.title a:hover { color: var(--link); }
+
+  /* Badges */
+  .badge { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 500; background: var(--badge-grey); color: var(--badge-grey-text); }
+  .badge.movie { background: var(--badge-blue); color: var(--badge-blue-text); }
+  .badge.show { background: var(--badge-green); color: var(--badge-green-text); }
+  .badge.airing { background: var(--badge-green); color: var(--badge-green-text); }
+
+  .empty { background: var(--surface); border: 1px dashed var(--border); border-radius: 8px; padding: 40px; text-align: center; color: var(--muted); }
+
+  @media (max-width: 600px) {
+    input[type="search"] { width: 100%; }
+    #f-count { margin-left: 0; }
+  }
 </style>
 </head>
 <body>
 
-<h1>Plex Cleanup</h1>
+<main>
+
+<header>
+  <h1>Plex <span>Cleanup</span></h1>
+  <div class="actions">
+    <?php if ($cache): ?>
+      <span class="muted">Last generated <?= e(date('j M Y, H:i', $cache['generated_at'])) ?></span>
+      <a class="button secondary" href="?format=csv">Download CSV</a>
+    <?php endif; ?>
+    <form method="post" onsubmit="this.querySelector('button').disabled = true; this.querySelector('button').textContent = 'Generating… (about a minute)';">
+      <input type="hidden" name="action" value="generate">
+      <button type="submit"><?= $cache ? 'Regenerate report' : 'Generate report' ?></button>
+    </form>
+  </div>
+</header>
 
 <?php if ($error): ?>
-  <p class="error">Report generation failed: <?= e($error) ?></p>
+  <p class="msg error">Report generation failed: <?= e($error) ?></p>
 <?php elseif (isset($_GET['generated'])): ?>
-  <p class="ok">Report generated.</p>
+  <p class="msg ok">Report generated.</p>
 <?php endif; ?>
 
-<div class="bar">
-  <form method="post" onsubmit="this.querySelector('button').disabled = true; this.querySelector('button').textContent = 'Generating… (this can take a few minutes)';">
-    <input type="hidden" name="action" value="generate">
-    <button type="submit"><?= $cache ? 'Regenerate report' : 'Generate report' ?></button>
-  </form>
-  <?php if ($cache): ?>
-    <span class="muted">Last generated <?= e(date('Y-m-d H:i', $cache['generated_at'])) ?></span>
-    <a href="?format=csv">Download CSV</a>
-  <?php else: ?>
-    <span class="muted">No report yet.</span>
-  <?php endif; ?>
-</div>
-
-<?php if ($rows): ?>
-  <p class="stats">
+<?php if (!$rows): ?>
+  <div class="empty">No report yet. Use <strong>Generate report</strong> to read the Plex library.</div>
+<?php else: ?>
+  <section class="stats">
     <?php foreach ($totals as $type => $t): ?>
-      <span><strong><?= e(ucfirst($type)) ?>s:</strong> <?= $t['count'] ?> · <?= gb($t['gb']) ?> · <?= $t['unwatched'] ?> never watched</span>
+      <div class="card">
+        <h2><?= e(ucfirst($type)) ?>s</h2>
+        <div class="big"><?= gb($t['gb']) ?></div>
+        <div class="sub"><?= number_format($t['count']) ?> titles · <?= number_format($t['unwatched']) ?> never watched</div>
+      </div>
     <?php endforeach; ?>
-  </p>
+  </section>
 
-  <div class="bar">
+  <div class="filters">
     <label>Type
       <select id="f-type">
         <option value="">All</option>
@@ -158,21 +254,23 @@ function gb(float $v): string
           data-eps="<?= e($epsPct) ?>"
           data-status="<?= e($r['tmdb_status']) ?>">
         <td class="title"><?= $tmdbUrl ? '<a href="' . e($tmdbUrl) . '" target="_blank" rel="noopener">' . e($r['title']) . '</a>' : e($r['title']) ?></td>
-        <td><?= e($r['type']) ?></td>
+        <td><span class="badge <?= e($r['type']) ?>"><?= e($r['type']) ?></span></td>
         <td class="num"><?= e($r['year']) ?></td>
-        <td class="num"><?= gb((float) $r['size_gb']) ?></td>
+        <td class="num size"><?= gb((float) $r['size_gb']) ?></td>
         <td><?= e($r['added']) ?></td>
         <td><?= $r['last_viewed'] !== '' ? e($r['last_viewed']) : '<span class="muted">never</span>' ?></td>
         <td class="num"><?= e($r['view_count']) ?></td>
         <td class="num"><?= e($r['users_watched']) ?></td>
         <td class="num"><?= $isShow ? e($r['episodes_watched'] . ' / ' . $r['episodes_total']) : '' ?></td>
-        <td><?= e($r['tmdb_status']) ?><?= $r['tmdb_in_production'] === 'yes' ? ' <span class="muted">(in production)</span>' : '' ?></td>
+        <td><?php if ($r['tmdb_status'] !== ''): ?><span class="badge<?= $r['tmdb_in_production'] === 'yes' ? ' airing' : '' ?>"><?= e($r['tmdb_status']) ?></span><?php endif; ?></td>
       </tr>
     <?php endforeach; ?>
     </tbody>
   </table>
   </div>
 <?php endif; ?>
+
+</main>
 
 <script>
 (() => {
