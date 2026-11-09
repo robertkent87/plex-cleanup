@@ -2,6 +2,10 @@
 // report.php - read-only Plex library report
 // Usage: php report.php > report.csv
 
+// Warnings go to stderr so they can never end up in the CSV on stdout.
+error_reporting(E_ALL);
+ini_set('display_errors', 'stderr');
+
 require __DIR__ . '/vendor/autoload.php';
 
 use Dotenv\Dotenv;
@@ -46,13 +50,13 @@ function plex(string $path, array $query = []): array
     return getJson($url, ['X-Plex-Token: ' . $plexToken]);
 }
 
-function tmdb(string $path): ?array
+function tmdb(string $path, array $query = []): ?array
 {
     global $tmdbKey;
     if ($tmdbKey === '') {
         return null;
     }
-    $url = 'https://api.themoviedb.org/3' . $path . '?api_key=' . urlencode($tmdbKey);
+    $url = 'https://api.themoviedb.org/3' . $path . '?' . http_build_query(['api_key' => $tmdbKey] + $query);
     try {
         return getJson($url);
     } catch (RuntimeException $e) {
@@ -66,15 +70,84 @@ function fmtDate(?int $ts): string
     return $ts ? date('Y-m-d', $ts) : '';
 }
 
-/** Pull the TMDB id out of Plex's Guid list (requires includeGuids=1). */
-function tmdbIdFrom(array $item): ?int
+/** Pull an external id (tmdb, tvdb, imdb) out of Plex's Guid list (requires includeGuids=1). */
+function externalIdFrom(array $item, string $scheme): ?string
 {
     foreach ($item['Guid'] ?? [] as $g) {
-        if (preg_match('#^tmdb://(\d+)$#', $g['id'] ?? '', $m)) {
-            return (int) $m[1];
+        if (preg_match('#^' . preg_quote($scheme, '#') . '://(.+)$#', $g['id'] ?? '', $m)) {
+            return $m[1];
+        }
+    }
+    // Items matched by Plex's legacy agents have no Guid list, only e.g.
+    // guid="com.plexapp.agents.thetvdb://78881?lang=en".
+    $legacy = ['tmdb' => 'themoviedb', 'tvdb' => 'thetvdb', 'imdb' => 'imdb'][$scheme] ?? $scheme;
+    if (preg_match('#^com\.plexapp\.agents\.' . preg_quote($legacy, '#') . '://([^?/]+)#', $item['guid'] ?? '', $m)) {
+        return $m[1];
+    }
+    return null;
+}
+
+/** TMDB id for an item, falling back to a TMDB lookup by TVDB id for shows on the older agent. */
+function tmdbIdFor(array $item, bool $isShow): ?int
+{
+    $id = externalIdFrom($item, 'tmdb');
+    if ($id !== null && ctype_digit($id)) {
+        return (int) $id;
+    }
+    if ($isShow) {
+        $tvdb = externalIdFrom($item, 'tvdb');
+        if ($tvdb !== null && ctype_digit($tvdb)) {
+            $found = tmdb("/find/$tvdb", ['external_source' => 'tvdb_id']);
+            if (!empty($found['tv_results'][0]['id'])) {
+                return (int) $found['tv_results'][0]['id'];
+            }
         }
     }
     return null;
+}
+
+/**
+ * Watch history for all accounts on the server (needs the server owner's token).
+ * Returns [ratingKey => ['plays' => int, 'last' => int, 'accounts' => [id => true], 'episodes' => [key => true]]],
+ * keyed by movie ratingKey or, for episodes, the show's ratingKey. Returns null if history can't be read.
+ */
+function loadHistory(): ?array
+{
+    $history = [];
+    $start   = 0;
+    $size    = 1000;
+    try {
+        do {
+            $mc = plex('/status/sessions/history/all', [
+                'X-Plex-Container-Start' => $start,
+                'X-Plex-Container-Size'  => $size,
+            ])['MediaContainer'] ?? [];
+            $rows = $mc['Metadata'] ?? [];
+
+            foreach ($rows as $row) {
+                $isEpisode = ($row['type'] ?? '') === 'episode';
+                $key = $isEpisode
+                    ? ($row['grandparentRatingKey'] ?? basename($row['grandparentKey'] ?? ''))
+                    : ($row['ratingKey'] ?? basename($row['key'] ?? ''));
+                if ($key === '' || $key === null) {
+                    continue; // item no longer in the library
+                }
+                $h = &$history[(string) $key];
+                $h['plays']    = ($h['plays'] ?? 0) + 1;
+                $h['last']     = max($h['last'] ?? 0, (int) ($row['viewedAt'] ?? 0));
+                $h['accounts'][(string) ($row['accountID'] ?? '?')] = true;
+                if ($isEpisode && isset($row['ratingKey'])) {
+                    $h['episodes'][(string) $row['ratingKey']] = true;
+                }
+                unset($h);
+            }
+            $start += $size;
+        } while (count($rows) === $size);
+    } catch (RuntimeException $e) {
+        fwrite(STDERR, "History unavailable, using per-item watch data only: " . $e->getMessage() . "\n");
+        return null;
+    }
+    return $history;
 }
 
 /** Sum file sizes (bytes) from a Plex item's Media/Part list. */
@@ -99,6 +172,8 @@ fputcsv($out, [
     'added',
     'last_viewed',
     'view_count',
+    'users_watched',
+    'history_source',
     'episodes_total',
     'episodes_watched',
     'size_gb',
@@ -107,6 +182,7 @@ fputcsv($out, [
     'tmdb_in_production',
 ]);
 
+$history  = loadHistory();
 $sections = plex('/library/sections')['MediaContainer']['Directory'] ?? [];
 
 foreach ($sections as $section) {
@@ -122,22 +198,32 @@ foreach ($sections as $section) {
 
     foreach ($items as $item) {
         $isShow  = $section['type'] === 'show';
-        $tmdbId  = tmdbIdFrom($item);
+        $tmdbId  = tmdbIdFor($item, $isShow);
         $size    = 0;
         $epTotal = '';
         $epSeen  = '';
+        $h       = $history[(string) $item['ratingKey']] ?? null;
 
         if ($isShow) {
             // Shows: total size comes from all episodes.
             $leaves = plex("/library/metadata/{$item['ratingKey']}/allLeaves")['MediaContainer']['Metadata'] ?? [];
             foreach ($leaves as $ep) {
-                $$size += mediaSizeBytes($ep);
+                $size += mediaSizeBytes($ep);
             }
             $epTotal = $item['leafCount'] ?? '';
-            $epSeen  = $item['viewedLeafCount'] ?? 0;
+            // viewedLeafCount is for the token's account only; history covers every account.
+            $epSeen  = max((int) ($item['viewedLeafCount'] ?? 0), count($h['episodes'] ?? []));
         } else {
             $size = mediaSizeBytes($item);
         }
+
+        // Combine all-account history with the token account's own fields (history can be pruned).
+        $itemLast   = (int) ($item['lastViewedAt'] ?? 0);
+        $itemCount  = (int) ($item['viewCount'] ?? 0);
+        $lastViewed = max($itemLast, $h['last'] ?? 0);
+        $viewCount  = max($itemCount, $h['plays'] ?? 0);
+        $users      = count($h['accounts'] ?? []) ?: ($itemCount > 0 ? 1 : 0);
+        $source     = $h ? 'history' : ($itemCount > 0 || $itemLast > 0 ? 'item' : '');
 
         $tmdbStatus = $tmdbLastAir = $tmdbInProd = '';
         if ($isShow && $tmdbId) {
@@ -156,8 +242,10 @@ foreach ($sections as $section) {
             $item['ratingKey'] ?? '',
             $tmdbId ?? '',
             fmtDate($item['addedAt'] ?? null),
-            fmtDate($item['lastViewedAt'] ?? null),
-            $item['viewCount'] ?? 0,
+            fmtDate($lastViewed ?: null),
+            $viewCount,
+            $users,
+            $source,
             $epTotal,
             $epSeen,
             round($size / 1024 ** 3, 2),

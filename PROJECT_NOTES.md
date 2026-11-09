@@ -48,7 +48,8 @@ A monthly review tool for a Plex library stored on an external drive. It flags m
 
 - `report.php`: working. Reads the Plex library and TMDB, and writes a CSV to stdout (`php report.php > report.csv`).
 - `.gitignore`: in place. Excludes `vendor/`, `.env`, CSV and database files, and editor files.
-- The CSV output has not yet been checked against the actual library.
+- `report.php` fixes (2026-11-09): show sizes were always 0 (typo); watch data now comes from all-account history (`/status/sessions/history/all`, ~8.4k plays, 7 accounts) merged with the token account's own fields, with new `users_watched` and `history_source` columns; TMDB ids are read from legacy-agent `guid` values and looked up by TVDB id when missing; warnings go to stderr. All shows except one local-only item (Berserk Redux) now have a TMDB status.
+- The CSV output has not yet been fully checked against the actual library. About 600 of 852 movies still show as never watched, even with full history.
 - Design agreed: Leaving Soon collections per library, `queued-YYYY-MM-DD` and `keep` labels, deletion direct from the share, and a localhost review page.
 
 ## Next steps
