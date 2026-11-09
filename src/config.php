@@ -72,10 +72,13 @@ function validateConfig(array $c): array
 
     $check('rules.unwatched.enabled', 'bool');
     $check('rules.unwatched.min_added_months', 'int', true);
-    $check('rules.watched_once.enabled', 'bool');
-    $check('rules.watched_once.max_plays', 'int', true);
-    $check('rules.watched_once.min_last_viewed_months', 'int', true);
-    $check('rules.watched_once.min_added_months', 'int', true);
+    $check('rules.movie_watched.enabled', 'bool');
+    $check('rules.movie_watched.max_plays', 'int', true);
+    $check('rules.movie_watched.min_last_viewed_months', 'int', true);
+    $check('rules.movie_watched.min_added_months', 'int', true);
+    $check('rules.show_watched.enabled', 'bool');
+    $check('rules.show_watched.min_last_viewed_months', 'int', true);
+    $check('rules.show_watched.min_added_months', 'int', true);
     $check('tmdb.protect_in_production', 'bool');
     $check('tmdb.protected_statuses', 'string[]');
     $check('tmdb.protect_unknown', 'bool');

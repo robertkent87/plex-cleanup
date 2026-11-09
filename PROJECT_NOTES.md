@@ -59,6 +59,7 @@ A monthly review tool for a Plex library stored on an external drive. It flags m
 - `report.php` fixes (2026-11-09): show sizes were always 0 (typo); watch data now comes from all-account history (`/status/sessions/history/all`, ~8.4k plays, 7 accounts) merged with the token account's own fields, with new `users_watched` and `history_source` columns; TMDB ids are read from legacy-agent `guid` values and looked up by TVDB id when missing; warnings go to stderr. All shows except one local-only item (Berserk Redux) now have a TMDB status.
 - Review page, first slice (2026-11-09): `public/index.php` at `http://localhost/plex-cleanup/public/`. Generates the report (about 40 seconds), saves it to `data/report.json`, and shows a sortable, filterable table with totals and CSV download. No Keep or Queue actions yet. Shared logic lives in `src/report.php`; `report.php` (CLI) uses it and also refreshes the saved report. A root `.htaccess` blocks everything outside `public/`, because Laragon's localhost site was serving `.env`.
 - Config (2026-11-09): `config.php` holds the rule thresholds, TMDB protection rules (in production, protected statuses, unknown status), the 30-day countdown, label names, collection names and the dry-run default. `src/config.php` validates it on load and lists every problem; read values with `config('rules.unwatched.min_added_months')`. No secrets, so it is committed.
+- Rule engine (2026-11-09): `src/rules.php` gives every title a verdict (Keep, Queued, Protected, Candidate, Not a candidate) with a reason, applied on every page load so `config.php` changes take effect on reload. Rules: `unwatched`, `movie_watched` (movies only, play limit), `show_watched` (shows, last watched only). The report now records the `keep` label, `queued-` date and Leaving Soon membership. The review page shows a Candidates card, a Rules panel with per-rule counts and sizes, a Verdict column and filter, and verdicts in the CSV download. First results: 708 candidates (3.07 TB), 11 protected, 6 already in Leaving Soon collections without `queued-` labels.
 - The CSV output has not yet been fully checked against the actual library. About 600 of 852 movies still show as never watched, even with full history.
 - Design agreed: Leaving Soon collections per library, `queued-YYYY-MM-DD` and `keep` labels, deletion direct from the share, and a localhost review page.
 
@@ -75,6 +76,7 @@ A monthly review tool for a Plex library stored on an external drive. It flags m
 
 ## Open questions
 
+- There are two show libraries (TV Shows and Anime). Only TV Shows has a `Series Leaving Soon` collection; decide before step 4 whether Anime gets its own collection with the same name.
 - Whether Plex `addedAt` values are reliable after file moves. The current added dates are spread across years, which looks healthy; spot-check a few long-held titles.
 - Whether Plex on this server supports promoting a collection to Recommended, and where it then appears.
 - Whether the TV library UI shows collections on this Plex version, and where promoted TV collections appear.

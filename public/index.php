@@ -9,8 +9,18 @@ if (!in_array($_SERVER['REMOTE_ADDR'] ?? '', ['127.0.0.1', '::1'], true)) {
 }
 
 require dirname(__DIR__) . '/src/report.php';
+require dirname(__DIR__) . '/src/rules.php';
 
 $error = null;
+
+// Config problems are shown on the page rather than breaking it.
+$configError = null;
+try {
+    $config = config();
+} catch (RuntimeException $e) {
+    $config = null;
+    $configError = $e->getMessage();
+}
 
 // Generate: POST, then redirect so a refresh doesn't regenerate.
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'generate') {
@@ -27,7 +37,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'gener
 $cache = loadReportCache();
 $rows  = $cache['rows'] ?? [];
 
-// CSV download of the saved report.
+// Verdicts are worked out on every page load, so config changes apply on reload.
+if ($config) {
+    $rows = applyRules($rows, $config);
+} else {
+    foreach ($rows as &$row) {
+        $row += ['verdict' => 'none', 'rule' => null, 'reason' => 'Config has errors'];
+    }
+    unset($row);
+}
+$summary = summariseVerdicts($rows);
+
+// CSV download of the saved report, with verdicts.
 if (($_GET['format'] ?? '') === 'csv' && $cache) {
     header('Content-Type: text/csv; charset=utf-8');
     header('Content-Disposition: attachment; filename="plex-report-' . date('Y-m-d', $cache['generated_at']) . '.csv"');
@@ -52,35 +73,10 @@ function e($v): string
     return htmlspecialchars((string) $v, ENT_QUOTES, 'UTF-8');
 }
 
-/** "2026-11-09" -> "9th Nov 2026". */
-function niceDate(string $ymd): string
+/** "on"/"off" badge for a rule's enabled flag. */
+function onOff(bool $on): string
 {
-    $d = DateTimeImmutable::createFromFormat('!Y-m-d', $ymd);
-    return $d ? $d->format('jS M Y') : $ymd;
-}
-
-/** "2026-10-19" -> "3 weeks ago", relative to today. */
-function ago(string $ymd): string
-{
-    $d = DateTimeImmutable::createFromFormat('!Y-m-d', $ymd);
-    if (!$d) {
-        return '';
-    }
-    $days = (int) $d->diff(new DateTimeImmutable('today'))->format('%r%a');
-    $plural = fn(int $n, string $unit) => "$n $unit" . ($n === 1 ? '' : 's') . ' ago';
-    return match (true) {
-        $days <= 0  => 'today',
-        $days === 1 => 'yesterday',
-        $days < 14  => $plural($days, 'day'),
-        $days < 60  => $plural(intdiv($days, 7), 'week'),
-        $days < 730 => $plural(intdiv($days, 30), 'month'),
-        default     => $plural(intdiv($days, 365), 'year'),
-    };
-}
-
-function gb(float $v): string
-{
-    return $v >= 1024 ? number_format($v / 1024, 2) . ' TB' : number_format($v, 1) . ' GB';
+    return $on ? '<span class="badge airing">on</span>' : '<span class="badge">off</span>';
 }
 ?>
 <!doctype html>
@@ -189,6 +185,27 @@ function gb(float $v): string
   .badge.movie { background: var(--badge-blue); color: var(--badge-blue-text); }
   .badge.show { background: var(--badge-green); color: var(--badge-green-text); }
   .badge.airing { background: var(--badge-green); color: var(--badge-green-text); }
+  .badge.v-candidate { background: var(--accent); color: var(--accent-text); font-weight: 600; }
+  .badge.v-protected { background: var(--badge-blue); color: var(--badge-blue-text); }
+  .badge.v-keep { background: var(--badge-green); color: var(--badge-green-text); }
+  .badge.v-queued { background: var(--err-bg); color: var(--err-text); }
+  td.verdict { white-space: normal; min-width: 200px; }
+  td.verdict .ago { margin-top: 2px; }
+
+  /* Rules panel */
+  .rules { margin-bottom: 20px; padding: 0; }
+  .rules summary { cursor: pointer; padding: 12px 16px; font-weight: 600; list-style: none; display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .rules summary::-webkit-details-marker { display: none; }
+  .rules summary > span:first-child::before { content: "▸"; color: var(--muted); margin-right: 8px; }
+  .rules[open] summary > span:first-child::before { content: "▾"; }
+  .rules summary .muted { font-weight: 400; }
+  .rules .body { padding: 0 16px 14px; overflow-x: auto; }
+  .rules table td, .rules table th { position: static; background: none; cursor: default; padding: 6px 12px 6px 0; border-bottom: 1px solid var(--border); }
+  .rules table th:hover { color: var(--muted); }
+  .rules .note { margin: 12px 0 0; color: var(--muted); font-size: 13px; }
+  code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; background: var(--surface-2); padding: 1px 5px; border-radius: 4px; }
+  .card.highlight { border-color: var(--accent); }
+  .card.highlight .big { color: var(--accent); }
 
   .empty { background: var(--surface); border: 1px dashed var(--border); border-radius: 8px; padding: 40px; text-align: center; color: var(--muted); }
 
@@ -216,6 +233,10 @@ function gb(float $v): string
   </div>
 </header>
 
+<?php if ($configError): ?>
+  <p class="msg error" style="white-space: pre-line">config.php has problems, so no rules were applied:
+<?= e($configError) ?></p>
+<?php endif; ?>
 <?php if ($error): ?>
   <p class="msg error">Report generation failed: <?= e($error) ?></p>
 <?php elseif (isset($_GET['generated'])): ?>
@@ -233,9 +254,71 @@ function gb(float $v): string
         <div class="sub"><?= number_format($t['count']) ?> titles · <?= number_format($t['unwatched']) ?> never watched</div>
       </div>
     <?php endforeach; ?>
+    <?php $v = $summary['verdicts']; ?>
+    <div class="card highlight">
+      <h2>Candidates</h2>
+      <div class="big"><?= gb($v['candidate']['gb']) ?></div>
+      <div class="sub"><?= number_format($v['candidate']['count']) ?> titles · <?= $v['protected']['count'] ?> protected · <?= $v['queued']['count'] ?> queued · <?= $v['keep']['count'] ?> kept</div>
+    </div>
   </section>
 
+  <?php if ($config): $c = $config['rules']; ?>
+  <details class="card rules" open>
+    <summary>
+      <span>Rules</span>
+      <span class="muted">Edit <code>config.php</code> and reload to apply changes</span>
+    </summary>
+    <div class="body">
+      <table>
+        <thead><tr><th>Rule</th><th>Status</th><th>Flags a title when</th><th class="num">Candidates</th><th class="num">Size</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><?= e(RULE_LABELS['unwatched']) ?></td>
+            <td><?= onOff($c['unwatched']['enabled']) ?></td>
+            <td>Movie or show nobody has watched, added more than <?= $c['unwatched']['min_added_months'] ?> months ago</td>
+            <td class="num"><?= $summary['rules']['unwatched']['count'] ?></td>
+            <td class="num"><?= gb($summary['rules']['unwatched']['gb']) ?></td>
+          </tr>
+          <tr>
+            <td><?= e(RULE_LABELS['movie_watched']) ?></td>
+            <td><?= onOff($c['movie_watched']['enabled']) ?></td>
+            <td>Movie watched at most <?= $c['movie_watched']['max_plays'] === 1 ? 'once' : $c['movie_watched']['max_plays'] . ' times' ?>, last watched more than <?= $c['movie_watched']['min_last_viewed_months'] ?> months ago, added more than <?= $c['movie_watched']['min_added_months'] ?> months ago</td>
+            <td class="num"><?= $summary['rules']['movie_watched']['count'] ?></td>
+            <td class="num"><?= gb($summary['rules']['movie_watched']['gb']) ?></td>
+          </tr>
+          <tr>
+            <td><?= e(RULE_LABELS['show_watched']) ?></td>
+            <td><?= onOff($c['show_watched']['enabled']) ?></td>
+            <td>Show with no episode watched by anyone for more than <?= $c['show_watched']['min_last_viewed_months'] ?> months, added more than <?= $c['show_watched']['min_added_months'] ?> months ago</td>
+            <td class="num"><?= $summary['rules']['show_watched']['count'] ?></td>
+            <td class="num"><?= gb($summary['rules']['show_watched']['gb']) ?></td>
+          </tr>
+        </tbody>
+      </table>
+      <p class="note">
+        <strong>Shows are protected</strong> (never candidates) when
+        <?= implode('; ', array_filter([
+            $config['tmdb']['protect_in_production'] ? 'TMDB says still in production' : null,
+            $config['tmdb']['protected_statuses'] ? 'TMDB status is ' . e(implode(', ', $config['tmdb']['protected_statuses'])) : null,
+            $config['tmdb']['protect_unknown'] ? 'there is no TMDB status' : null,
+        ])) ?: 'never' ?>.
+        Titles labelled <code><?= e($config['labels']['keep']) ?></code> are never considered.
+        Queued titles have a <?= $config['countdown_days'] ?>-day countdown.
+        Nothing is queued or deleted from this page yet: candidates are for review only.
+      </p>
+    </div>
+  </details>
+  <?php endif; ?>
+
   <div class="filters">
+    <label>Verdict
+      <select id="f-verdict">
+        <option value="">All</option>
+        <?php foreach (VERDICTS as $key => $label): ?>
+          <option value="<?= e($key) ?>"><?= e($label) ?> (<?= $summary['verdicts'][$key]['count'] ?>)</option>
+        <?php endforeach; ?>
+      </select>
+    </label>
     <label>Type
       <select id="f-type">
         <option value="">All</option>
@@ -253,6 +336,7 @@ function gb(float $v): string
     <thead>
       <tr>
         <th data-key="title">Title</th>
+        <th data-key="verdict">Verdict</th>
         <th data-key="type">Type</th>
         <th data-key="year" class="num">Year</th>
         <th data-key="size" class="num" data-dir="desc">Size</th>
@@ -271,6 +355,8 @@ function gb(float $v): string
         $epsPct = $isShow && (int) $r['episodes_total'] > 0 ? $r['episodes_watched'] / $r['episodes_total'] : -1;
     ?>
       <tr data-type="<?= e($r['type']) ?>"
+          data-v="<?= e($r['verdict']) ?>"
+          data-verdict="<?= array_search($r['verdict'], array_keys(VERDICTS), true) ?>"
           data-title="<?= e(mb_strtolower($r['title'])) ?>"
           data-year="<?= e($r['year']) ?>"
           data-size="<?= e($r['size_gb']) ?>"
@@ -281,6 +367,10 @@ function gb(float $v): string
           data-eps="<?= e($epsPct) ?>"
           data-status="<?= e($r['tmdb_status']) ?>">
         <td class="title"><?= $tmdbUrl ? '<a href="' . e($tmdbUrl) . '" target="_blank" rel="noopener">' . e($r['title']) . '</a>' : e($r['title']) ?></td>
+        <td class="verdict">
+          <?php if ($r['verdict'] !== 'none'): ?><span class="badge v-<?= e($r['verdict']) ?>"><?= e(VERDICTS[$r['verdict']]) ?></span><?php endif; ?>
+          <span class="ago"><?= e($r['reason']) ?></span>
+        </td>
         <td><span class="badge <?= e($r['type']) ?>"><?= e($r['type']) ?></span></td>
         <td class="num"><?= e($r['year']) ?></td>
         <td class="num size"><?= gb((float) $r['size_gb']) ?></td>
@@ -305,35 +395,42 @@ function gb(float $v): string
   if (!table) return;
   const tbody = table.tBodies[0];
   const rows = Array.from(tbody.rows);
-  const numeric = new Set(['year', 'size', 'plays', 'users', 'eps']);
+  const numeric = new Set(['year', 'size', 'plays', 'users', 'eps', 'verdict']);
+  const ascFirst = new Set(['verdict']); // candidates first on the first click
 
   // Sorting: click a header; click again to reverse.
   table.tHead.addEventListener('click', ev => {
     const th = ev.target.closest('th');
     if (!th) return;
     const key = th.dataset.key;
-    const dir = th.dataset.dir === 'desc' ? 'asc' : (th.dataset.dir === 'asc' ? 'desc' : (numeric.has(key) ? 'desc' : 'asc'));
+    const dir = th.dataset.dir === 'desc' ? 'asc' : (th.dataset.dir === 'asc' ? 'desc' : (numeric.has(key) && !ascFirst.has(key) ? 'desc' : 'asc'));
     table.querySelectorAll('th').forEach(h => delete h.dataset.dir);
     th.dataset.dir = dir;
     const sign = dir === 'asc' ? 1 : -1;
     rows.sort((a, b) => {
       let x = a.dataset[key], y = b.dataset[key];
-      if (numeric.has(key)) { x = parseFloat(x) || 0; y = parseFloat(y) || 0; return (x - y) * sign; }
+      if (numeric.has(key)) {
+        x = parseFloat(x) || 0; y = parseFloat(y) || 0;
+        // Ties (e.g. same verdict) fall back to size, largest first.
+        return (x - y) * sign || (parseFloat(b.dataset.size) - parseFloat(a.dataset.size));
+      }
       return x.localeCompare(y) * sign;
     });
     tbody.append(...rows);
   });
 
   // Filtering.
+  const fVerdict = document.getElementById('f-verdict');
   const fType = document.getElementById('f-type');
   const fUnwatched = document.getElementById('f-unwatched');
   const fSearch = document.getElementById('f-search');
   const fCount = document.getElementById('f-count');
   function filter() {
-    const type = fType.value, unwatched = fUnwatched.checked, q = fSearch.value.trim().toLowerCase();
+    const verdict = fVerdict.value, type = fType.value, unwatched = fUnwatched.checked, q = fSearch.value.trim().toLowerCase();
     let shown = 0;
     for (const r of rows) {
-      const ok = (!type || r.dataset.type === type)
+      const ok = (!verdict || r.dataset.v === verdict)
+        && (!type || r.dataset.type === type)
         && (!unwatched || r.dataset.viewed === '')
         && (!q || r.dataset.title.includes(q));
       r.hidden = !ok;
@@ -341,7 +438,7 @@ function gb(float $v): string
     }
     fCount.textContent = `${shown} of ${rows.length} shown`;
   }
-  [fType, fUnwatched].forEach(el => el.addEventListener('change', filter));
+  [fVerdict, fType, fUnwatched].forEach(el => el.addEventListener('change', filter));
   fSearch.addEventListener('input', filter);
   filter();
 })();

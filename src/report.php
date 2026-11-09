@@ -24,6 +24,9 @@ const REPORT_COLUMNS = [
     'tmdb_status',
     'tmdb_last_air_date',
     'tmdb_in_production',
+    'keep',              // 'yes' if labelled keep
+    'queued_date',       // YYYY-MM-DD from a queued- label
+    'in_leaving_soon',   // 'yes' if in the library's Leaving Soon collection
 ];
 
 const REPORT_CACHE = __DIR__ . '/../data/report.json';
@@ -174,6 +177,43 @@ function loadHistory(): ?array
 }
 
 /**
+ * The keep and queued- labels in a library section, as [ratingKey => [label, ...]].
+ * Uses the section's label filter, which is reliable where item listings omit tags.
+ */
+function trackedLabels(string $sectionKey, int $plexType): array
+{
+    $keep   = config('labels.keep');
+    $prefix = config('labels.queue_prefix');
+    $out    = [];
+    foreach (plex("/library/sections/$sectionKey/label")['MediaContainer']['Directory'] ?? [] as $label) {
+        $name = $label['title'] ?? '';
+        if (strcasecmp($name, $keep) !== 0 && stripos($name, $prefix) !== 0) {
+            continue;
+        }
+        $items = plex("/library/sections/$sectionKey/all", ['type' => $plexType, 'label' => $label['key']])['MediaContainer']['Metadata'] ?? [];
+        foreach ($items as $item) {
+            $out[(string) $item['ratingKey']][] = $name;
+        }
+    }
+    return $out;
+}
+
+/** ratingKeys in the section's Leaving Soon collection (if it exists), as a set. */
+function leavingSoonMembers(string $sectionKey, string $collectionTitle): array
+{
+    $members = [];
+    foreach (plex("/library/sections/$sectionKey/collections")['MediaContainer']['Metadata'] ?? [] as $col) {
+        if (strcasecmp($col['title'] ?? '', $collectionTitle) !== 0) {
+            continue;
+        }
+        foreach (plex("/library/collections/{$col['ratingKey']}/children")['MediaContainer']['Metadata'] ?? [] as $item) {
+            $members[(string) $item['ratingKey']] = true;
+        }
+    }
+    return $members;
+}
+
+/**
  * Read the Plex library and TMDB and return one row per movie or show,
  * as associative arrays keyed by REPORT_COLUMNS.
  */
@@ -193,6 +233,8 @@ function buildReport(): array
             'type'         => $plexType,
             'includeGuids' => 1,
         ])['MediaContainer']['Metadata'] ?? [];
+        $labels  = trackedLabels((string) $section['key'], $plexType);
+        $leaving = leavingSoonMembers((string) $section['key'], config('collections.' . $section['type']));
 
         foreach ($items as $item) {
             $isShow  = $section['type'] === 'show';
@@ -233,6 +275,18 @@ function buildReport(): array
                 }
             }
 
+            $itemLabels = $labels[(string) $item['ratingKey']] ?? [];
+            $isKept     = false;
+            $queuedDate = '';
+            foreach ($itemLabels as $name) {
+                if (strcasecmp($name, config('labels.keep')) === 0) {
+                    $isKept = true;
+                } elseif (preg_match('/(\d{4}-\d{2}-\d{2})$/', $name, $m)) {
+                    // Keep the earliest date if there are several queued- labels.
+                    $queuedDate = $queuedDate === '' ? $m[1] : min($queuedDate, $m[1]);
+                }
+            }
+
             $report[] = array_combine(REPORT_COLUMNS, [
                 $isShow ? 'show' : 'movie',
                 $item['title'] ?? '',
@@ -250,6 +304,9 @@ function buildReport(): array
                 $tmdbStatus,
                 $tmdbLastAir,
                 $tmdbInProd,
+                $isKept ? 'yes' : '',
+                $queuedDate,
+                isset($leaving[(string) $item['ratingKey']]) ? 'yes' : '',
             ]);
         }
     }
@@ -257,10 +314,10 @@ function buildReport(): array
     return $report;
 }
 
-/** Write rows as CSV (with header) to an open stream. */
+/** Write rows as CSV (with header) to an open stream. Extra keys on the rows (e.g. verdicts) become extra columns. */
 function writeReportCsv($stream, array $rows): void
 {
-    fputcsv($stream, REPORT_COLUMNS);
+    fputcsv($stream, $rows ? array_keys($rows[0]) : REPORT_COLUMNS);
     foreach ($rows as $row) {
         fputcsv($stream, array_values($row));
     }
