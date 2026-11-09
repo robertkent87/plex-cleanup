@@ -52,6 +52,32 @@ function e($v): string
     return htmlspecialchars((string) $v, ENT_QUOTES, 'UTF-8');
 }
 
+/** "2026-11-09" -> "9th Nov 2026". */
+function niceDate(string $ymd): string
+{
+    $d = DateTimeImmutable::createFromFormat('!Y-m-d', $ymd);
+    return $d ? $d->format('jS M Y') : $ymd;
+}
+
+/** "2026-10-19" -> "3 weeks ago", relative to today. */
+function ago(string $ymd): string
+{
+    $d = DateTimeImmutable::createFromFormat('!Y-m-d', $ymd);
+    if (!$d) {
+        return '';
+    }
+    $days = (int) $d->diff(new DateTimeImmutable('today'))->format('%r%a');
+    $plural = fn(int $n, string $unit) => "$n $unit" . ($n === 1 ? '' : 's') . ' ago';
+    return match (true) {
+        $days <= 0  => 'today',
+        $days === 1 => 'yesterday',
+        $days < 14  => $plural($days, 'day'),
+        $days < 60  => $plural(intdiv($days, 7), 'week'),
+        $days < 730 => $plural(intdiv($days, 30), 'month'),
+        default     => $plural(intdiv($days, 365), 'year'),
+    };
+}
+
 function gb(float $v): string
 {
     return $v >= 1024 ? number_format($v / 1024, 2) . ' TB' : number_format($v, 1) . ' GB';
@@ -153,6 +179,7 @@ function gb(float $v): string
   tbody tr:hover td { background: var(--surface-2); }
   td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
   td.size { font-weight: 600; }
+  .ago { display: block; font-size: 12px; color: var(--muted); }
   td.title { white-space: normal; min-width: 220px; font-weight: 500; }
   td.title a { color: var(--text); }
   td.title a:hover { color: var(--link); }
@@ -179,7 +206,7 @@ function gb(float $v): string
   <h1>Plex <span>Cleanup</span></h1>
   <div class="actions">
     <?php if ($cache): ?>
-      <span class="muted">Last generated <?= e(date('j M Y, H:i', $cache['generated_at'])) ?></span>
+      <span class="muted">Last generated <?= e(date('jS M Y, H:i', $cache['generated_at'])) ?></span>
       <a class="button secondary" href="?format=csv">Download CSV</a>
     <?php endif; ?>
     <form method="post" onsubmit="this.querySelector('button').disabled = true; this.querySelector('button').textContent = 'Generating… (about a minute)';">
@@ -257,8 +284,8 @@ function gb(float $v): string
         <td><span class="badge <?= e($r['type']) ?>"><?= e($r['type']) ?></span></td>
         <td class="num"><?= e($r['year']) ?></td>
         <td class="num size"><?= gb((float) $r['size_gb']) ?></td>
-        <td><?= e($r['added']) ?></td>
-        <td><?= $r['last_viewed'] !== '' ? e($r['last_viewed']) : '<span class="muted">never</span>' ?></td>
+        <td><?= e(niceDate($r['added'])) ?></td>
+        <td><?php if ($r['last_viewed'] !== ''): ?><?= e(niceDate($r['last_viewed'])) ?> <span class="ago"><?= e(ago($r['last_viewed'])) ?></span><?php else: ?><span class="muted">never</span><?php endif; ?></td>
         <td class="num"><?= e($r['view_count']) ?></td>
         <td class="num"><?= e($r['users_watched']) ?></td>
         <td class="num"><?= $isShow ? e($r['episodes_watched'] . ' / ' . $r['episodes_total']) : '' ?></td>
