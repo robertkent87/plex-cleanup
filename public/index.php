@@ -368,6 +368,13 @@ function onOff(bool $on): string
     padding: 10px 16px; box-shadow: 0 8px 30px rgba(0, 0, 0, .5); max-width: calc(100% - 32px);
   }
   .bulk[hidden] { display: none; }
+  .bulk [hidden] { display: none; }
+
+  /* Pager */
+  .pager { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; justify-content: center; margin: 14px 0 80px; }
+  .pager[hidden] { display: none; }
+  .pager button:disabled { opacity: .4; cursor: default; }
+  #pager-info { color: var(--muted); min-width: 260px; text-align: center; }
   #bulk-count { font-weight: 600; }
 
   /* Preview */
@@ -717,6 +724,14 @@ function onOff(bool $on): string
     </label>
     <label><input type="checkbox" id="f-unwatched"> Never watched only</label>
     <label>Search <input type="search" id="f-search" placeholder="Title"></label>
+    <label>Rows per page
+      <select id="f-size">
+        <option value="25">25</option>
+        <option value="50" selected>50</option>
+        <option value="100">100</option>
+        <option value="0">All</option>
+      </select>
+    </label>
     <span class="muted" id="f-count"></span>
   </div>
 
@@ -784,6 +799,14 @@ function onOff(bool $on): string
   </table>
   </div>
 
+  <nav class="pager" id="pager" aria-label="Pages">
+    <button type="button" class="button secondary" data-page="first" aria-label="First page">«</button>
+    <button type="button" class="button secondary" data-page="prev">‹ Previous</button>
+    <span id="pager-info"></span>
+    <button type="button" class="button secondary" data-page="next">Next ›</button>
+    <button type="button" class="button secondary" data-page="last" aria-label="Last page">»</button>
+  </nav>
+
   <!-- Selected titles go to the preview first; nothing changes until Apply is pressed there. -->
   <form method="post" id="action-form" hidden>
     <input type="hidden" name="token" value="<?= e($token) ?>">
@@ -793,6 +816,7 @@ function onOff(bool $on): string
   </form>
   <div class="bulk" id="bulk" hidden>
     <span id="bulk-count"></span>
+    <button type="button" id="bulk-all" class="button secondary" hidden></button>
     <button type="button" data-bulk="queue">Queue selected</button>
     <button type="button" data-bulk="keep" class="button secondary">Keep selected</button>
     <button type="button" data-bulk="delete" class="danger" title="Only titles due for deletion are moved; others are refused in the preview">Delete selected</button>
@@ -826,18 +850,31 @@ function onOff(bool $on): string
   const rows = Array.from(tbody.rows);
   const numeric = new Set(['year', 'size', 'plays', 'users', 'eps', 'verdict']);
   const ascFirst = new Set(['verdict']); // candidates first on the first click
+  const $ = id => document.getElementById(id);
+  const fVerdict = $('f-verdict'), fType = $('f-type'), fUnwatched = $('f-unwatched');
+  const fSearch = $('f-search'), fSize = $('f-size'), fCount = $('f-count');
+  const pager = $('pager'), pagerInfo = $('pager-info');
+  const selAll = $('sel-all'), bulk = $('bulk'), bulkCount = $('bulk-count'), bulkAll = $('bulk-all');
+  const form = $('action-form');
+  const isChecked = r => r.querySelector('.row-sel').checked;
+  const fmtGb = gb => gb >= 1024 ? (gb / 1024).toFixed(2) + ' TB' : gb.toFixed(1) + ' GB';
 
-  // Sorting: click a header; click again to reverse.
-  table.tHead.addEventListener('click', ev => {
-    const th = ev.target.closest('th');
-    if (!th || !th.dataset.key) return;
-    const key = th.dataset.key;
-    const dir = th.dataset.dir === 'desc' ? 'asc' : (th.dataset.dir === 'asc' ? 'desc' : (numeric.has(key) && !ascFirst.has(key) ? 'desc' : 'asc'));
-    table.querySelectorAll('th').forEach(h => delete h.dataset.dir);
-    th.dataset.dir = dir;
-    const sign = dir === 'asc' ? 1 : -1;
+  // The view (filters, sort, page) is remembered in this browser, so after Queue,
+  // Keep or Delete you come back to the same place. Storage may be unavailable.
+  const STORE = 'plex-cleanup-view';
+  const view = Object.assign(
+    { verdict: '', type: '', unwatched: false, q: '', sortKey: 'size', sortDir: 'desc', size: 50, page: 1 },
+    (() => { try { return JSON.parse(localStorage.getItem(STORE)) || {}; } catch (e) { return {}; } })()
+  );
+  const save = () => { try { localStorage.setItem(STORE, JSON.stringify(view)); } catch (e) { /* ignore */ } };
+
+  let matching = [];   // rows that pass the filters, in sorted order
+  let pageRows = [];   // the matching rows on the current page
+
+  function sortRows() {
+    const key = view.sortKey, sign = view.sortDir === 'asc' ? 1 : -1;
     rows.sort((a, b) => {
-      let x = a.dataset[key], y = b.dataset[key];
+      let x = a.dataset[key] ?? '', y = b.dataset[key] ?? '';
       if (numeric.has(key)) {
         x = parseFloat(x) || 0; y = parseFloat(y) || 0;
         // Ties (e.g. same verdict) fall back to size, largest first.
@@ -846,51 +883,56 @@ function onOff(bool $on): string
       return x.localeCompare(y) * sign;
     });
     tbody.append(...rows);
-  });
+    table.querySelectorAll('th').forEach(h => {
+      if (h.dataset.key === key) h.dataset.dir = view.sortDir; else delete h.dataset.dir;
+    });
+  }
 
-  // Filtering.
-  const fVerdict = document.getElementById('f-verdict');
-  const fType = document.getElementById('f-type');
-  const fUnwatched = document.getElementById('f-unwatched');
-  const fSearch = document.getElementById('f-search');
-  const fCount = document.getElementById('f-count');
-  function filter() {
-    const verdict = fVerdict.value, type = fType.value, unwatched = fUnwatched.checked, q = fSearch.value.trim().toLowerCase();
-    let shown = 0;
-    for (const r of rows) {
-      const ok = (!verdict || r.dataset.v === verdict)
-        && (!type || r.dataset.type === type)
-        && (!unwatched || r.dataset.viewed === '')
-        && (!q || r.dataset.title.includes(q));
-      r.hidden = !ok;
-      if (ok) shown++;
-    }
-    fCount.textContent = `${shown} of ${rows.length} shown`;
+  // Apply filters and paging. Rows outside the filters or on other pages are hidden.
+  function render() {
+    const q = view.q.trim().toLowerCase();
+    matching = rows.filter(r =>
+      (!view.verdict || r.dataset.v === view.verdict)
+      && (!view.type || r.dataset.type === view.type)
+      && (!view.unwatched || r.dataset.viewed === '')
+      && (!q || r.dataset.title.includes(q)));
+    const size = view.size > 0 ? view.size : Math.max(matching.length, 1);
+    const pages = Math.max(1, Math.ceil(matching.length / size));
+    view.page = Math.min(Math.max(1, view.page), pages);
+    const start = (view.page - 1) * size;
+    pageRows = matching.slice(start, start + size);
+    const onPage = new Set(pageRows);
+    rows.forEach(r => { r.hidden = !onPage.has(r); });
+
+    fCount.textContent = `${matching.length} of ${rows.length} titles match`;
+    pagerInfo.textContent = matching.length
+      ? `Page ${view.page} of ${pages} · showing ${start + 1}–${start + pageRows.length} of ${matching.length}`
+      : 'No titles match';
+    pager.querySelector('[data-page="first"]').disabled = pager.querySelector('[data-page="prev"]').disabled = view.page <= 1;
+    pager.querySelector('[data-page="next"]').disabled = pager.querySelector('[data-page="last"]').disabled = view.page >= pages;
+    pager.hidden = pages <= 1;
+    save();
     updateBulk();
   }
 
-  // Selection and actions. Only visible rows can be selected with "select all".
-  const selAll = document.getElementById('sel-all');
-  const bulk = document.getElementById('bulk');
-  const bulkCount = document.getElementById('bulk-count');
-  const form = document.getElementById('action-form');
-  const fmtGb = gb => gb >= 1024 ? (gb / 1024).toFixed(2) + ' TB' : gb.toFixed(1) + ' GB';
-  // Hidden (filtered-out) rows never take part in an action, even if ticked earlier.
-  const selected = () => rows.filter(r => !r.hidden && r.querySelector('.row-sel').checked);
+  // Selection: ticked rows that match the filters, on any page. Rows filtered out
+  // never take part in an action, even if they were ticked earlier.
+  const selected = () => matching.filter(isChecked);
   function updateBulk() {
     const sel = selected();
     bulk.hidden = sel.length === 0;
     const size = sel.reduce((t, r) => t + (parseFloat(r.dataset.size) || 0), 0);
-    bulkCount.textContent = `${sel.length} selected · ${fmtGb(size)}`;
-    syncSelectAll();
+    const offPage = sel.filter(r => r.hidden).length;
+    bulkCount.textContent = `${sel.length} selected · ${fmtGb(size)}` + (offPage ? ` (${offPage} on other pages)` : '');
+    // Offer to extend a full-page selection to every matching title.
+    const pageFull = pageRows.length > 0 && pageRows.every(isChecked);
+    bulkAll.hidden = !(pageFull && sel.length < matching.length);
+    bulkAll.textContent = `Select all ${matching.length} matching`;
+    const checkedOnPage = pageRows.filter(isChecked).length;
+    selAll.checked = pageFull;
+    selAll.indeterminate = checkedOnPage > 0 && !pageFull;
   }
-  function syncSelectAll() {
-    if (!selAll) return;
-    const visible = rows.filter(r => !r.hidden);
-    const checked = visible.filter(r => r.querySelector('.row-sel').checked).length;
-    selAll.checked = visible.length > 0 && checked === visible.length;
-    selAll.indeterminate = checked > 0 && checked < visible.length;
-  }
+
   function submitAction(op, keys) {
     // Delete has its own preview (with typed confirmation); the others share one.
     form.elements.action.value = op === 'delete' ? 'delete_preview' : 'preview';
@@ -898,8 +940,47 @@ function onOff(bool $on): string
     form.elements.keys.value = keys.join(',');
     form.submit();
   }
+
+  // Sorting: click a header; click again to reverse. Back to page 1.
+  table.tHead.addEventListener('click', ev => {
+    const th = ev.target.closest('th');
+    if (!th || !th.dataset.key) return;
+    const key = th.dataset.key;
+    view.sortDir = view.sortKey === key
+      ? (view.sortDir === 'desc' ? 'asc' : 'desc')
+      : (numeric.has(key) && !ascFirst.has(key) ? 'desc' : 'asc');
+    view.sortKey = key;
+    view.page = 1;
+    sortRows();
+    render();
+  });
+
+  // Filters: any change goes back to page 1.
+  const onFilter = () => {
+    view.verdict = fVerdict.value; view.type = fType.value; view.unwatched = fUnwatched.checked;
+    view.q = fSearch.value; view.size = parseInt(fSize.value, 10) || 0; view.page = 1;
+    render();
+  };
+  [fVerdict, fType, fUnwatched, fSize].forEach(el => el.addEventListener('change', onFilter));
+  fSearch.addEventListener('input', onFilter);
+
+  pager.addEventListener('click', ev => {
+    const btn = ev.target.closest('button[data-page]');
+    if (!btn || btn.disabled) return;
+    const step = { first: -Infinity, prev: -1, next: 1, last: Infinity }[btn.dataset.page];
+    view.page = Number.isFinite(step) ? view.page + step : (step > 0 ? Infinity : 1);
+    render();
+    table.closest('.wrap').scrollTop = 0;
+    table.closest('.wrap').scrollIntoView({ block: 'start', behavior: 'smooth' });
+  });
+
+  // "Select all" in the header ticks the current page only.
   selAll.addEventListener('change', () => {
-    rows.forEach(r => { if (!r.hidden) r.querySelector('.row-sel').checked = selAll.checked; });
+    pageRows.forEach(r => { r.querySelector('.row-sel').checked = selAll.checked; });
+    updateBulk();
+  });
+  bulkAll.addEventListener('click', () => {
+    matching.forEach(r => { r.querySelector('.row-sel').checked = true; });
     updateBulk();
   });
   tbody.addEventListener('change', ev => { if (ev.target.classList.contains('row-sel')) updateBulk(); });
@@ -911,13 +992,20 @@ function onOff(bool $on): string
     const btn = ev.target.closest('button[data-bulk]');
     if (btn) submitAction(btn.dataset.bulk, selected().map(r => r.dataset.rk));
   });
-  document.getElementById('bulk-clear').addEventListener('click', () => {
-    rows.forEach(r => r.querySelector('.row-sel').checked = false);
+  $('bulk-clear').addEventListener('click', () => {
+    rows.forEach(r => { r.querySelector('.row-sel').checked = false; });
     updateBulk();
   });
-  [fVerdict, fType, fUnwatched].forEach(el => el.addEventListener('change', filter));
-  fSearch.addEventListener('input', filter);
-  filter();
+
+  // Restore the saved view into the controls, then draw.
+  if (![...fVerdict.options].some(o => o.value === view.verdict)) view.verdict = '';
+  if (!['', 'movie', 'show'].includes(view.type)) view.type = '';
+  if (![...fSize.options].some(o => o.value === String(view.size))) view.size = 50;
+  if (!table.querySelector(`th[data-key="${CSS.escape(view.sortKey)}"]`)) { view.sortKey = 'size'; view.sortDir = 'desc'; }
+  fVerdict.value = view.verdict; fType.value = view.type; fUnwatched.checked = !!view.unwatched;
+  fSearch.value = view.q; fSize.value = String(view.size);
+  sortRows();
+  render();
 })();
 </script>
 </body>
