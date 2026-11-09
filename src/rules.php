@@ -9,6 +9,7 @@ require_once __DIR__ . '/format.php';
 /** Verdicts, in the order they are checked. */
 const VERDICTS = [
     'keep'      => 'Keep',          // labelled keep: never considered
+    'due'       => 'Due for deletion', // queued and the countdown has ended
     'queued'    => 'Queued',        // in Leaving Soon or has a queued- label
     'protected' => 'Protected',     // matched a rule, but the show is still airing (or unknown)
     'candidate' => 'Candidate',     // matched a rule: can be queued from the review page
@@ -25,6 +26,13 @@ const RULE_LABELS = [
 function olderThanMonths(string $ymd, int $months, DateTimeImmutable $today): bool
 {
     return $ymd !== '' && $ymd < $today->modify("-$months months")->format('Y-m-d');
+}
+
+/** Days until a title queued on $queuedDate is due; 0 or less means due now. */
+function queueDaysLeft(string $queuedDate, int $countdownDays, DateTimeImmutable $today): int
+{
+    $due = (new DateTimeImmutable($queuedDate))->modify("+$countdownDays days");
+    return (int) $today->diff($due)->format('%r%a');
 }
 
 /**
@@ -47,14 +55,16 @@ function evaluateTitle(array $row, array $config, DateTimeImmutable $today): arr
     // 2. Already in the queue: shown with its countdown, not re-evaluated.
     $queuedDate = (string) ($row['queued_date'] ?? '');
     if ($queuedDate !== '') {
-        $due = (new DateTimeImmutable($queuedDate))->modify('+' . $config['countdown_days'] . ' days');
-        $daysLeft = (int) $today->diff($due)->format('%r%a');
-        return $verdict('queued', null, $daysLeft > 0
-            ? "Queued " . niceDate($queuedDate) . ", $daysLeft days left"
-            : "Queued " . niceDate($queuedDate) . ", due for deletion (needs confirmation)");
+        $daysLeft = queueDaysLeft($queuedDate, $config['countdown_days'], $today);
+        // Watching during the countdown doesn't stop deletion (that's what the
+        // countdown is for), but it is flagged for review.
+        $watchedSince = $last !== '' && $last >= $queuedDate ? ' · watched since queued' : '';
+        return $daysLeft > 0
+            ? $verdict('queued', null, 'Queued ' . niceDate($queuedDate) . ", $daysLeft day" . ($daysLeft === 1 ? '' : 's') . " left$watchedSince")
+            : $verdict('due', null, 'Queued ' . niceDate($queuedDate) . ', countdown ended' . $watchedSince);
     }
     if (($row['in_leaving_soon'] ?? '') === 'yes') {
-        return $verdict('queued', null, 'In Leaving Soon, no queue date yet');
+        return $verdict('queued', null, 'In Leaving Soon, no queue date yet (use Sync labels)');
     }
 
     // 3. Has anyone watched it? A title marked watched with no recorded plays still counts.

@@ -54,7 +54,23 @@ return [
         'Anime'    => 'Anime Leaving Soon',
     ],
 
-    // While true, Queue and Keep on the review page (and sync.php) only preview
-    // what would change in Plex. Set to false to allow changes to be applied.
+    // Deletion: titles whose countdown has ended are moved to a trash folder on the
+    // share (not deleted), and the trash is emptied later. Both need confirming.
+    'deletion' => [
+        // Plex's path to the media drive, and the same folder as this PC sees it.
+        'plex_path_prefix' => '/storage/7C2C30781B05642C/NVIDIA_SHIELD',
+        'share_path'       => '\\\\192.168.1.147\\Seagate Desktop Drive\\NVIDIA_SHIELD',
+        // Folder inside share_path that holds moved files. Keep it outside every library folder.
+        'trash_folder'     => '_PlexCleanupTrash',
+        // Trash batches can be emptied once they are at least this many days old.
+        'trash_keep_days'  => 14,
+        // Files next to a video with the same name and one of these extensions are
+        // moved with it (e.g. "Movie (2000).en.srt" goes with "Movie (2000).mkv").
+        'sidecar_extensions' => ['srt', 'sub', 'idx', 'ass', 'ssa', 'vtt', 'smi', 'nfo'],
+    ],
+
+    // While true, every action on the review page (Queue, Keep, Sync labels, Delete,
+    // Empty trash) and sync.php only previews what would change. Set to false to
+    // allow changes to be applied.
     'dry_run' => true,
 ];

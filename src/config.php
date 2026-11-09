@@ -86,6 +86,15 @@ function validateConfig(array $c): array
     $check('labels.keep', 'string');
     $check('labels.queue_prefix', 'string');
     $check('dry_run', 'bool');
+    $check('deletion.plex_path_prefix', 'string');
+    $check('deletion.share_path', 'string');
+    $check('deletion.trash_folder', 'string');
+    $check('deletion.trash_keep_days', 'int', true);
+    $check('deletion.sidecar_extensions', 'string[]');
+    $trashName = $get('deletion.trash_folder');
+    if (is_string($trashName) && preg_match('#[\\\\/:]|^\.+$#', $trashName)) {
+        $errors[] = 'deletion.trash_folder must be a single folder name, not a path';
+    }
 
     $cols = $get('collections');
     if (!is_array($cols) || !$cols) {

@@ -8,7 +8,7 @@ if (!in_array($_SERVER['REMOTE_ADDR'] ?? '', ['127.0.0.1', '::1'], true)) {
     exit('Local access only.');
 }
 
-require dirname(__DIR__) . '/src/queue.php';
+require dirname(__DIR__) . '/src/delete.php';
 
 // Every form carries a session token, so another website open in the browser
 // can't submit changes to this page.
@@ -18,7 +18,9 @@ $token = $_SESSION['token'];
 $self  = strtok($_SERVER['REQUEST_URI'], '?');
 
 $error   = null;
-$preview = null;   // plan to show for confirmation
+$preview = null;   // queue/keep/sync plan to show for confirmation
+$deletePreview = null;  // deletion plan to show for confirmation
+$trashPreview  = null;  // trash batches to show for confirmation
 $flash   = $_SESSION['flash'] ?? null;
 unset($_SESSION['flash']);
 
@@ -52,7 +54,39 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (!$config) {
             throw new RuntimeException('Fix config.php before queueing or keeping titles.');
         }
-        if ($action === 'preview') {
+        $typed = trim((string) ($_POST['confirm'] ?? ''));
+        if ($action === 'delete_preview') {
+            $deletePreview = buildDeletionPlan($keys) + ['keys' => $keys];
+        } elseif ($action === 'delete_apply') {
+            // Re-plan from Plex's current state; the typed number must match what will be moved.
+            $plan = buildDeletionPlan($keys);
+            $n = count($plan['items']);
+            if ($n === 0 || $typed !== (string) $n) {
+                $deletePreview = $plan + ['keys' => $keys];
+                throw new RuntimeException("Type $n to confirm moving $n title" . ($n === 1 ? '' : 's') . ' to the trash.');
+            }
+            $result = applyDeletionPlan($plan);
+            $msg = 'Moved ' . count($result['ok']) . ' title' . (count($result['ok']) === 1 ? '' : 's') . ' (' . gb($result['bytes'] / 1024 ** 3) . ') to the trash. Plex has been asked to rescan.';
+            foreach ($result['failed'] as $f) {
+                $msg .= "\nProblem: {$f['title']}: {$f['error']}";
+            }
+            $_SESSION['flash'] = [$result['failed'] ? 'error' : 'ok', $msg];
+            header("Location: $self");
+            exit;
+        } elseif ($action === 'trash_preview') {
+            $trashPreview = trashBatches();
+        } elseif ($action === 'trash_apply') {
+            $ready = array_filter(trashBatches(), fn($b) => $b['can_empty']);
+            $n = count($ready);
+            if ($n === 0 || $typed !== (string) $n) {
+                $trashPreview = trashBatches();
+                throw new RuntimeException("Type $n to confirm permanently deleting $n trash batch" . ($n === 1 ? '' : 'es') . '.');
+            }
+            $done = emptyTrash();
+            $_SESSION['flash'] = ['ok', 'Permanently deleted ' . count($done['batches']) . ' trash batch' . (count($done['batches']) === 1 ? '' : 'es') . ', freeing ' . gb($done['bytes'] / 1024 ** 3) . '.'];
+            header("Location: $self");
+            exit;
+        } elseif ($action === 'preview') {
             $preview = buildPlan($op, $keys) + ['keys' => $keys];
         } elseif ($action === 'apply') {
             // Rebuild the plan from Plex's current state rather than trusting the preview.
@@ -85,6 +119,21 @@ if ($config) {
     unset($row);
 }
 $summary = summariseVerdicts($rows);
+
+// Trash summary (files moved off the library, not yet permanently deleted).
+$trash = null;
+$trashTotals = ['bytes' => 0, 'ready' => 0];
+if ($config) {
+    try {
+        $trash = trashBatches();
+        foreach ($trash as $b) {
+            $trashTotals['bytes'] += $b['bytes'];
+            $trashTotals['ready'] += $b['can_empty'] ? $b['bytes'] : 0;
+        }
+    } catch (Throwable $e) {
+        $trash = null; // share unreachable: leave the card out
+    }
+}
 
 // CSV download of the saved report, with verdicts.
 if (($_GET['format'] ?? '') === 'csv' && $cache) {
@@ -227,6 +276,34 @@ function onOff(bool $on): string
   .badge.v-protected { background: var(--badge-blue); color: var(--badge-blue-text); }
   .badge.v-keep { background: var(--badge-green); color: var(--badge-green-text); }
   .badge.v-queued { background: var(--err-bg); color: var(--err-text); }
+  .badge.v-due { background: #b3261e; color: #fff; font-weight: 600; }
+
+  /* Mode banner and viewport outline */
+  .mode-banner { padding: 10px 16px; text-align: center; font-size: 14px; position: sticky; top: 0; z-index: 20; }
+  .mode-banner .hint { display: inline-block; margin-left: 8px; opacity: .85; }
+  .mode-banner code { background: rgba(0, 0, 0, .25); }
+  .mode-banner.dry { background: var(--accent); color: var(--accent-text); }
+  .mode-banner.live { background: #b3261e; color: #fff; }
+  body.mode-dry::after {
+    content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 30;
+    border: 4px solid var(--accent);
+  }
+
+  /* Danger styling for deletion */
+  button.danger, .button.danger { background: #b3261e; color: #fff; }
+  button.mini.danger { background: #b3261e; color: #fff; }
+  .card.danger { border-color: #b3261e; }
+  .card.danger .big { color: #f2a3a6; }
+  .preview.danger { border-color: #b3261e; }
+  form.inline { display: inline; margin-left: 8px; }
+  .confirm-form { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+  .confirm-form input[type="text"] { font: inherit; color: var(--text); background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; width: 70px; }
+  .delete-list { display: grid; gap: 8px; margin: 12px 0; max-height: 55vh; overflow: auto; }
+  .delete-item { background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px; }
+  .delete-item summary { cursor: pointer; display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; }
+  .delete-item .files { margin: 8px 0 0; padding-left: 18px; font-size: 13px; }
+  .delete-item .files li { margin: 2px 0; word-break: break-all; }
+  .delete-item .files li.missing code { text-decoration: line-through; opacity: .6; }
   td.verdict { white-space: normal; min-width: 200px; }
   td.verdict .ago { margin-top: 2px; }
 
@@ -277,16 +354,25 @@ function onOff(bool $on): string
   }
 </style>
 </head>
-<body>
+<body class="<?= $config && $config['dry_run'] ? 'mode-dry' : ($config ? 'mode-live' : '') ?>">
+
+<?php if ($config && $config['dry_run']): ?>
+  <div class="mode-banner dry" role="status">
+    <strong>Dry run</strong> — every action only shows a preview. Nothing will change in Plex or on the drive.
+    <span class="hint">To make changes, set <code>'dry_run' =&gt; false</code> in <code>config.php</code> and reload.</span>
+  </div>
+<?php elseif ($config): ?>
+  <div class="mode-banner live" role="status">
+    <strong>Changes enabled</strong> — confirmed actions change Plex and move files on the drive.
+    <span class="hint">Set <code>'dry_run' =&gt; true</code> in <code>config.php</code> to go back to previews only.</span>
+  </div>
+<?php endif; ?>
 
 <main>
 
 <header>
   <h1>Plex <span>Cleanup</span></h1>
   <div class="actions">
-    <?php if ($config): ?>
-      <?= $config['dry_run'] ? '<span class="badge v-queued" title="Set dry_run to false in config.php to allow changes">Dry run: previews only</span>' : '<span class="badge v-candidate">Changes enabled</span>' ?>
-    <?php endif; ?>
     <?php if ($cache): ?>
       <span class="muted">Last generated <?= e(date('jS M Y, H:i', $cache['generated_at'])) ?></span>
       <a class="button secondary" href="?format=csv">Download CSV</a>
@@ -372,6 +458,109 @@ function onOff(bool $on): string
       <a class="button secondary" href="<?= e($self) ?>"><?= $pCount && !$config['dry_run'] ? 'Cancel' : 'Back to list' ?></a>
     </div>
   </section>
+<?php elseif ($deletePreview):
+    $dCount = count($deletePreview['items']);
+    $dBytes = array_sum(array_column($deletePreview['items'], 'bytes'));
+    $dFiles = array_sum(array_map(fn($i) => count(array_filter($i['files'], fn($f) => $f['exists'])), $deletePreview['items']));
+?>
+  <section class="card preview danger">
+    <h2 class="preview-title">Move to trash: preview</h2>
+    <p class="muted">Files are moved to <code><?= e(trashRoot() . '\\' . $deletePreview['date']) ?></code>, keeping their folder structure, so they can be moved back until the trash is emptied. Plex is asked to rescan afterwards, so the titles disappear from the library and the Leaving Soon collections. Space is only freed when the trash is emptied (after <?= $config['deletion']['trash_keep_days'] ?> days).</p>
+
+    <?php if ($dCount): ?>
+      <p><strong><?= $dCount ?> title<?= $dCount === 1 ? '' : 's' ?></strong>, <?= $dFiles ?> file<?= $dFiles === 1 ? '' : 's' ?>, <?= gb($dBytes / 1024 ** 3) ?>:</p>
+      <div class="delete-list">
+        <?php foreach ($deletePreview['items'] as $item): $present = array_filter($item['files'], fn($f) => $f['exists']); ?>
+          <details class="delete-item">
+            <summary>
+              <strong><?= e($item['title']) ?></strong>
+              <span class="muted"><?= e($item['library']) ?> · queued <?= e(niceDate($item['queued_date'])) ?> · <?= count($present) ?> file<?= count($present) === 1 ? '' : 's' ?> · <?= gb($item['bytes'] / 1024 ** 3) ?></span>
+              <?php foreach ($item['warnings'] as $w): ?><span class="badge v-queued"><?= e($w) ?></span><?php endforeach; ?>
+            </summary>
+            <ul class="files">
+              <?php foreach ($item['files'] as $f): ?>
+                <li class="<?= $f['exists'] ? '' : 'missing' ?>">
+                  <code><?= e($f['local']) ?></code>
+                  <span class="muted"><?= $f['exists'] ? gb($f['size'] / 1024 ** 3) : 'missing' ?><?= $f['kind'] === 'sidecar' ? ' · sidecar' : '' ?></span>
+                </li>
+              <?php endforeach; ?>
+            </ul>
+          </details>
+        <?php endforeach; ?>
+      </div>
+    <?php else: ?>
+      <p><strong>Nothing can be moved.</strong></p>
+    <?php endif; ?>
+
+    <?php if ($deletePreview['skipped']): ?>
+      <details class="skipped" open>
+        <summary><?= count($deletePreview['skipped']) ?> title<?= count($deletePreview['skipped']) === 1 ? '' : 's' ?> refused</summary>
+        <ul>
+          <?php foreach ($deletePreview['skipped'] as $s): ?>
+            <li><?= e($s['title']) ?> <span class="muted">— <?= e($s['reason']) ?></span></li>
+          <?php endforeach; ?>
+        </ul>
+      </details>
+    <?php endif; ?>
+
+    <div class="preview-actions">
+      <?php if ($dCount && !$config['dry_run']): ?>
+        <form method="post" class="confirm-form" onsubmit="this.querySelector('button').disabled = true; this.querySelector('button').textContent = 'Moving…';">
+          <input type="hidden" name="token" value="<?= e($token) ?>">
+          <input type="hidden" name="action" value="delete_apply">
+          <input type="hidden" name="keys" value="<?= e(implode(',', $deletePreview['keys'])) ?>">
+          <label>Type <strong><?= $dCount ?></strong> to confirm
+            <input type="text" name="confirm" inputmode="numeric" autocomplete="off" required size="4">
+          </label>
+          <button type="submit" class="danger">Move <?= $dCount ?> title<?= $dCount === 1 ? '' : 's' ?> to trash</button>
+        </form>
+      <?php elseif ($dCount): ?>
+        <p class="msg error">Dry run is on, so nothing will be moved. To move files, set <code>'dry_run' =&gt; false</code> in <code>config.php</code>, reload, and run this again.</p>
+      <?php endif; ?>
+      <a class="button secondary" href="<?= e($self) ?>"><?= $dCount && !$config['dry_run'] ? 'Cancel' : 'Back to list' ?></a>
+    </div>
+  </section>
+<?php elseif ($trashPreview !== null):
+    $ready = array_filter($trashPreview, fn($b) => $b['can_empty']);
+    $readyBytes = array_sum(array_column($ready, 'bytes'));
+?>
+  <section class="card preview danger">
+    <h2 class="preview-title">Trash</h2>
+    <p class="muted">Files moved to <code><?= e(trashRoot()) ?></code>, grouped by the day they were moved. A batch can be permanently deleted once it is <?= $config['deletion']['trash_keep_days'] ?> days old. Until then, files can be moved back to their original folders by hand (the folder structure is kept) and Plex will pick them up on its next scan.</p>
+    <?php if ($trashPreview): ?>
+      <div class="wrap preview-wrap">
+        <table>
+          <thead><tr><th>Moved on</th><th class="num">Size</th><th>Status</th></tr></thead>
+          <tbody>
+          <?php foreach ($trashPreview as $b): ?>
+            <tr>
+              <td><?= e(niceDate($b['date'])) ?> <span class="ago"><?= e(ago($b['date'])) ?></span></td>
+              <td class="num"><?= gb($b['bytes'] / 1024 ** 3) ?></td>
+              <td><?= $b['can_empty'] ? '<span class="badge v-due">Can be emptied</span>' : '<span class="badge">Kept for ' . ($config['deletion']['trash_keep_days'] - $b['age_days']) . ' more days</span>' ?></td>
+            </tr>
+          <?php endforeach; ?>
+          </tbody>
+        </table>
+      </div>
+    <?php else: ?>
+      <p><strong>The trash is empty.</strong></p>
+    <?php endif; ?>
+    <div class="preview-actions">
+      <?php if ($ready && !$config['dry_run']): ?>
+        <form method="post" class="confirm-form" onsubmit="this.querySelector('button').disabled = true; this.querySelector('button').textContent = 'Deleting…';">
+          <input type="hidden" name="token" value="<?= e($token) ?>">
+          <input type="hidden" name="action" value="trash_apply">
+          <label>Type <strong><?= count($ready) ?></strong> to confirm
+            <input type="text" name="confirm" inputmode="numeric" autocomplete="off" required size="4">
+          </label>
+          <button type="submit" class="danger">Permanently delete <?= count($ready) ?> batch<?= count($ready) === 1 ? '' : 'es' ?> (<?= gb($readyBytes / 1024 ** 3) ?>)</button>
+        </form>
+      <?php elseif ($ready): ?>
+        <p class="msg error">Dry run is on, so nothing will be deleted.</p>
+      <?php endif; ?>
+      <a class="button secondary" href="<?= e($self) ?>">Back to list</a>
+    </div>
+  </section>
 <?php elseif (!$rows): ?>
   <div class="empty">No report yet. Use <strong>Generate report</strong> to read the Plex library.</div>
 <?php else: ?>
@@ -389,6 +578,27 @@ function onOff(bool $on): string
       <div class="big"><?= gb($v['candidate']['gb']) ?></div>
       <div class="sub"><?= number_format($v['candidate']['count']) ?> titles · <?= $v['protected']['count'] ?> protected · <?= $v['queued']['count'] ?> queued · <?= $v['keep']['count'] ?> kept</div>
     </div>
+    <div class="card<?= $v['due']['count'] ? ' danger' : '' ?>">
+      <h2>Due for deletion</h2>
+      <div class="big"><?= gb($v['due']['gb']) ?></div>
+      <div class="sub"><?= number_format($v['due']['count']) ?> title<?= $v['due']['count'] === 1 ? '' : 's' ?> whose countdown has ended<?= $v['due']['count'] ? ' · filter by <em>Due for deletion</em> to review' : '' ?></div>
+    </div>
+    <?php if ($trash !== null): ?>
+      <div class="card">
+        <h2>Trash</h2>
+        <div class="big"><?= gb($trashTotals['bytes'] / 1024 ** 3) ?></div>
+        <div class="sub">
+          <?= count($trash) ?> batch<?= count($trash) === 1 ? '' : 'es' ?> · <?= gb($trashTotals['ready'] / 1024 ** 3) ?> can be emptied
+          <?php if ($trash): ?>
+            <form method="post" class="inline">
+              <input type="hidden" name="token" value="<?= e($token) ?>">
+              <input type="hidden" name="action" value="trash_preview">
+              <button type="submit" class="mini secondary">Review trash</button>
+            </form>
+          <?php endif; ?>
+        </div>
+      </div>
+    <?php endif; ?>
   </section>
 
   <?php if ($config): $c = $config['rules']; ?>
@@ -433,7 +643,7 @@ function onOff(bool $on): string
         ])) ?: 'never' ?>.
         Titles labelled <code><?= e($config['labels']['keep']) ?></code> are never considered.
         Queued titles have a <?= $config['countdown_days'] ?>-day countdown.
-        Queue and Keep always show a preview first; nothing is ever deleted from this page.
+        Every action shows a preview first. Titles due for deletion are moved to a trash folder (after typing a confirmation), and the trash can be emptied after <?= $config['deletion']['trash_keep_days'] ?> days.
       </p>
     </div>
   </details>
@@ -505,7 +715,8 @@ function onOff(bool $on): string
           <span class="ago"><?= e($r['reason']) ?></span>
         </td>
         <td class="row-actions">
-          <?php if (!in_array($r['verdict'], ['queued', 'keep'], true)): ?><button type="button" class="mini" data-op="queue">Queue</button><?php endif; ?>
+          <?php if ($r['verdict'] === 'due'): ?><button type="button" class="mini danger" data-op="delete">Delete</button><?php endif; ?>
+          <?php if (!in_array($r['verdict'], ['queued', 'due', 'keep'], true)): ?><button type="button" class="mini" data-op="queue">Queue</button><?php endif; ?>
           <?php if ($r['verdict'] !== 'keep'): ?><button type="button" class="mini secondary" data-op="keep">Keep</button><?php endif; ?>
         </td>
         <td><span class="badge <?= e($r['type']) ?>"><?= e($r['type']) ?></span></td>
@@ -534,6 +745,7 @@ function onOff(bool $on): string
     <span id="bulk-count"></span>
     <button type="button" data-bulk="queue">Queue selected</button>
     <button type="button" data-bulk="keep" class="button secondary">Keep selected</button>
+    <button type="button" data-bulk="delete" class="danger" title="Only titles due for deletion are moved; others are refused in the preview">Delete selected</button>
     <button type="button" id="bulk-clear" class="button secondary">Clear</button>
   </div>
 <?php endif; ?>
@@ -614,6 +826,8 @@ function onOff(bool $on): string
     selAll.indeterminate = checked > 0 && checked < visible.length;
   }
   function submitAction(op, keys) {
+    // Delete has its own preview (with typed confirmation); the others share one.
+    form.elements.action.value = op === 'delete' ? 'delete_preview' : 'preview';
     form.elements.op.value = op;
     form.elements.keys.value = keys.join(',');
     form.submit();
