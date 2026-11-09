@@ -85,6 +85,18 @@ A monthly review tool for a Plex library stored on an external drive. It flags m
 7. ~~Promote the Leaving Soon collections~~: done by hand in Plex 2026-11-09; no tool work needed.
 8. ~~Schedule monthly runs~~: dropped 2026-11-09; everything is run manually.
 
+## To do (later)
+
+Suggested 2026-11-09; not started.
+
+- **Stale report reminder:** highlight "Last generated" in the header when the report is older than a set number of days (configurable, e.g. 7), with a short prompt to regenerate before reviewing or queueing.
+- **Reminders panel:** a small, dismissible checklist on the review page for a review session:
+  1. Regenerate the report so watch data is current.
+  2. Spot-check a few never-watched titles against Plex.
+  3. Press Sync labels if any titles in a Leaving Soon collection have no queue date.
+  4. Use Turn on changes in the banner to apply anything.
+- **Automatic nudges instead of fixed text where possible:** e.g. show "8 titles in Leaving Soon have no queue date: Sync labels" only when that is actually the case, so the reminders reflect the current state.
+
 ## Open questions
 
 - Whether Plex `addedAt` values are reliable after file moves. The current added dates are spread across years, which looks healthy; spot-check a few long-held titles.
