@@ -1,6 +1,6 @@
 <?php
 // public/index.php - local review page.
-// Shows the last generated report and can regenerate it from Plex.
+// Shows the report with verdicts, and queues or keeps titles (preview first).
 
 // One-user tool with no login: only answer requests from this machine.
 if (!in_array($_SERVER['REMOTE_ADDR'] ?? '', ['127.0.0.1', '::1'], true)) {
@@ -8,10 +8,19 @@ if (!in_array($_SERVER['REMOTE_ADDR'] ?? '', ['127.0.0.1', '::1'], true)) {
     exit('Local access only.');
 }
 
-require dirname(__DIR__) . '/src/report.php';
-require dirname(__DIR__) . '/src/rules.php';
+require dirname(__DIR__) . '/src/queue.php';
 
-$error = null;
+// Every form carries a session token, so another website open in the browser
+// can't submit changes to this page.
+session_start();
+$_SESSION['token'] ??= bin2hex(random_bytes(16));
+$token = $_SESSION['token'];
+$self  = strtok($_SERVER['REQUEST_URI'], '?');
+
+$error   = null;
+$preview = null;   // plan to show for confirmation
+$flash   = $_SESSION['flash'] ?? null;
+unset($_SESSION['flash']);
 
 // Config problems are shown on the page rather than breaking it.
 $configError = null;
@@ -22,13 +31,42 @@ try {
     $configError = $e->getMessage();
 }
 
-// Generate: POST, then redirect so a refresh doesn't regenerate.
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'generate') {
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (!hash_equals($token, (string) ($_POST['token'] ?? ''))) {
+        http_response_code(400);
+        exit('This form has expired. Go back, reload the page and try again.');
+    }
     set_time_limit(0);
+    $action = $_POST['action'] ?? '';
+    $op     = (string) ($_POST['op'] ?? '');
+    $keys   = array_values(array_filter(explode(',', (string) ($_POST['keys'] ?? '')), 'ctype_digit'));
+
     try {
-        saveReportCache(buildReport());
-        header('Location: ' . strtok($_SERVER['REQUEST_URI'], '?') . '?generated=1');
-        exit;
+        if ($action === 'generate') {
+            // Generate, then redirect so a refresh doesn't regenerate.
+            saveReportCache(buildReport());
+            $_SESSION['flash'] = ['ok', 'Report generated.'];
+            header("Location: $self");
+            exit;
+        }
+        if (!$config) {
+            throw new RuntimeException('Fix config.php before queueing or keeping titles.');
+        }
+        if ($action === 'preview') {
+            $preview = buildPlan($op, $keys) + ['keys' => $keys];
+        } elseif ($action === 'apply') {
+            // Rebuild the plan from Plex's current state rather than trusting the preview.
+            $plan   = buildPlan($op, $keys);
+            $result = applyPlan($plan);
+            $done   = ['queue' => 'Queued', 'keep' => 'Kept', 'reconcile' => 'Synced labels for'][$op];
+            $msg    = "$done " . count($result['ok']) . ' title' . (count($result['ok']) === 1 ? '' : 's') . '.';
+            foreach ($result['failed'] as $f) {
+                $msg .= "\nFailed: {$f['title']}: {$f['error']}";
+            }
+            $_SESSION['flash'] = [$result['failed'] ? 'error' : 'ok', $msg];
+            header("Location: $self");
+            exit;
+        }
     } catch (Throwable $e) {
         $error = $e->getMessage();
     }
@@ -204,6 +242,30 @@ function onOff(bool $on): string
   .rules table th:hover { color: var(--muted); }
   .rules .note { margin: 12px 0 0; color: var(--muted); font-size: 13px; }
   code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; background: var(--surface-2); padding: 1px 5px; border-radius: 4px; }
+  /* Selection and actions */
+  th.sel, td.sel { width: 32px; padding-right: 0; }
+  td.row-actions { white-space: nowrap; }
+  button.mini { padding: 3px 10px; font-size: 12px; border-radius: 5px; }
+  button.mini.secondary { background: var(--surface-2); color: var(--text); border: 1px solid var(--border); font-weight: 500; }
+  button.mini.secondary:hover { border-color: var(--muted); }
+  .bulk {
+    position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); z-index: 5;
+    display: flex; gap: 12px; align-items: center; flex-wrap: wrap; justify-content: center;
+    background: var(--surface-2); border: 1px solid var(--accent); border-radius: 10px;
+    padding: 10px 16px; box-shadow: 0 8px 30px rgba(0, 0, 0, .5); max-width: calc(100% - 32px);
+  }
+  .bulk[hidden] { display: none; }
+  #bulk-count { font-weight: 600; }
+
+  /* Preview */
+  .preview { padding: 18px 20px; }
+  .preview-title { font-size: 18px !important; text-transform: none !important; letter-spacing: 0 !important; color: var(--text) !important; margin-bottom: 8px !important; }
+  .preview-wrap { max-height: 55vh; margin: 12px 0; }
+  .preview-actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-top: 16px; }
+  .preview-actions .msg { margin: 0; }
+  .skipped { margin-top: 12px; color: var(--muted); }
+  .skipped summary { cursor: pointer; }
+  .skipped ul { margin: 8px 0 0; padding-left: 20px; }
   .card.highlight { border-color: var(--accent); }
   .card.highlight .big { color: var(--accent); }
 
@@ -222,11 +284,21 @@ function onOff(bool $on): string
 <header>
   <h1>Plex <span>Cleanup</span></h1>
   <div class="actions">
+    <?php if ($config): ?>
+      <?= $config['dry_run'] ? '<span class="badge v-queued" title="Set dry_run to false in config.php to allow changes">Dry run: previews only</span>' : '<span class="badge v-candidate">Changes enabled</span>' ?>
+    <?php endif; ?>
     <?php if ($cache): ?>
       <span class="muted">Last generated <?= e(date('jS M Y, H:i', $cache['generated_at'])) ?></span>
       <a class="button secondary" href="?format=csv">Download CSV</a>
+      <form method="post">
+        <input type="hidden" name="token" value="<?= e($token) ?>">
+        <input type="hidden" name="action" value="preview">
+        <input type="hidden" name="op" value="reconcile">
+        <button type="submit" class="button secondary" title="Match queued- labels to the Leaving Soon collections">Sync labels</button>
+      </form>
     <?php endif; ?>
     <form method="post" onsubmit="this.querySelector('button').disabled = true; this.querySelector('button').textContent = 'Generating… (about a minute)';">
+      <input type="hidden" name="token" value="<?= e($token) ?>">
       <input type="hidden" name="action" value="generate">
       <button type="submit"><?= $cache ? 'Regenerate report' : 'Generate report' ?></button>
     </form>
@@ -238,12 +310,69 @@ function onOff(bool $on): string
 <?= e($configError) ?></p>
 <?php endif; ?>
 <?php if ($error): ?>
-  <p class="msg error">Report generation failed: <?= e($error) ?></p>
-<?php elseif (isset($_GET['generated'])): ?>
-  <p class="msg ok">Report generated.</p>
+  <p class="msg error" style="white-space: pre-line"><?= e($error) ?></p>
+<?php endif; ?>
+<?php if ($flash): ?>
+  <p class="msg <?= $flash[0] === 'ok' ? 'ok' : 'error' ?>" style="white-space: pre-line"><?= e($flash[1]) ?></p>
 <?php endif; ?>
 
-<?php if (!$rows): ?>
+<?php if ($preview):
+    $pCount = count($preview['items']);
+    $pVerb  = QUEUE_ACTIONS[$preview['action']];
+?>
+  <section class="card preview">
+    <h2 class="preview-title"><?= e($pVerb) ?>: preview</h2>
+    <?php if ($preview['action'] === 'reconcile'): ?>
+      <p class="muted">Matches labels to the Leaving Soon collections: titles added to a collection by hand get a <code><?= e($config['labels']['queue_prefix']) ?>DATE</code> label dated today, stale labels are removed, and kept titles leave the queue.</p>
+    <?php endif; ?>
+
+    <?php if ($pCount): ?>
+      <p><strong><?= $pCount ?> title<?= $pCount === 1 ? '' : 's' ?></strong> (<?= gb(planSizeGb($preview, $cache['rows'] ?? [])) ?>) will change in Plex:</p>
+      <div class="wrap preview-wrap">
+        <table>
+          <thead><tr><th>Title</th><th>Library</th><th>Changes</th></tr></thead>
+          <tbody>
+          <?php foreach ($preview['items'] as $item): ?>
+            <tr>
+              <td class="title"><?= e($item['title']) ?></td>
+              <td><?= e($item['library']) ?></td>
+              <td><?= e(ucfirst(implode(', ', array_map('describeOp', $item['ops'])))) ?></td>
+            </tr>
+          <?php endforeach; ?>
+          </tbody>
+        </table>
+      </div>
+    <?php else: ?>
+      <p><strong>Nothing to change.</strong></p>
+    <?php endif; ?>
+
+    <?php if ($preview['skipped']): ?>
+      <details class="skipped">
+        <summary><?= count($preview['skipped']) ?> title<?= count($preview['skipped']) === 1 ? '' : 's' ?> skipped</summary>
+        <ul>
+          <?php foreach ($preview['skipped'] as $s): ?>
+            <li><?= e($s['title']) ?> <span class="muted">— <?= e($s['reason']) ?></span></li>
+          <?php endforeach; ?>
+        </ul>
+      </details>
+    <?php endif; ?>
+
+    <div class="preview-actions">
+      <?php if ($pCount && !$config['dry_run']): ?>
+        <form method="post" onsubmit="this.querySelector('button').disabled = true; this.querySelector('button').textContent = 'Applying…';">
+          <input type="hidden" name="token" value="<?= e($token) ?>">
+          <input type="hidden" name="action" value="apply">
+          <input type="hidden" name="op" value="<?= e($preview['action']) ?>">
+          <input type="hidden" name="keys" value="<?= e(implode(',', $preview['keys'])) ?>">
+          <button type="submit">Apply changes to <?= $pCount ?> title<?= $pCount === 1 ? '' : 's' ?></button>
+        </form>
+      <?php elseif ($pCount): ?>
+        <p class="msg error">Dry run is on, so nothing will be changed. To apply changes, set <code>'dry_run' =&gt; false</code> in <code>config.php</code>, reload, and run this again.</p>
+      <?php endif; ?>
+      <a class="button secondary" href="<?= e($self) ?>"><?= $pCount && !$config['dry_run'] ? 'Cancel' : 'Back to list' ?></a>
+    </div>
+  </section>
+<?php elseif (!$rows): ?>
   <div class="empty">No report yet. Use <strong>Generate report</strong> to read the Plex library.</div>
 <?php else: ?>
   <section class="stats">
@@ -304,7 +433,7 @@ function onOff(bool $on): string
         ])) ?: 'never' ?>.
         Titles labelled <code><?= e($config['labels']['keep']) ?></code> are never considered.
         Queued titles have a <?= $config['countdown_days'] ?>-day countdown.
-        Nothing is queued or deleted from this page yet: candidates are for review only.
+        Queue and Keep always show a preview first; nothing is ever deleted from this page.
       </p>
     </div>
   </details>
@@ -335,8 +464,10 @@ function onOff(bool $on): string
   <table id="report">
     <thead>
       <tr>
+        <th class="sel"><input type="checkbox" id="sel-all" title="Select all shown" aria-label="Select all shown"></th>
         <th data-key="title">Title</th>
         <th data-key="verdict">Verdict</th>
+        <th>Actions</th>
         <th data-key="type">Type</th>
         <th data-key="year" class="num">Year</th>
         <th data-key="size" class="num" data-dir="desc">Size</th>
@@ -355,6 +486,7 @@ function onOff(bool $on): string
         $epsPct = $isShow && (int) $r['episodes_total'] > 0 ? $r['episodes_watched'] / $r['episodes_total'] : -1;
     ?>
       <tr data-type="<?= e($r['type']) ?>"
+          data-rk="<?= e($r['rating_key']) ?>"
           data-v="<?= e($r['verdict']) ?>"
           data-verdict="<?= array_search($r['verdict'], array_keys(VERDICTS), true) ?>"
           data-title="<?= e(mb_strtolower($r['title'])) ?>"
@@ -366,10 +498,15 @@ function onOff(bool $on): string
           data-users="<?= e($r['users_watched']) ?>"
           data-eps="<?= e($epsPct) ?>"
           data-status="<?= e($r['tmdb_status']) ?>">
+        <td class="sel"><input type="checkbox" class="row-sel" aria-label="Select <?= e($r['title']) ?>"></td>
         <td class="title"><?= $tmdbUrl ? '<a href="' . e($tmdbUrl) . '" target="_blank" rel="noopener">' . e($r['title']) . '</a>' : e($r['title']) ?></td>
         <td class="verdict">
           <?php if ($r['verdict'] !== 'none'): ?><span class="badge v-<?= e($r['verdict']) ?>"><?= e(VERDICTS[$r['verdict']]) ?></span><?php endif; ?>
           <span class="ago"><?= e($r['reason']) ?></span>
+        </td>
+        <td class="row-actions">
+          <?php if (!in_array($r['verdict'], ['queued', 'keep'], true)): ?><button type="button" class="mini" data-op="queue">Queue</button><?php endif; ?>
+          <?php if ($r['verdict'] !== 'keep'): ?><button type="button" class="mini secondary" data-op="keep">Keep</button><?php endif; ?>
         </td>
         <td><span class="badge <?= e($r['type']) ?>"><?= e($r['type']) ?></span></td>
         <td class="num"><?= e($r['year']) ?></td>
@@ -384,6 +521,20 @@ function onOff(bool $on): string
     <?php endforeach; ?>
     </tbody>
   </table>
+  </div>
+
+  <!-- Selected titles go to the preview first; nothing changes until Apply is pressed there. -->
+  <form method="post" id="action-form" hidden>
+    <input type="hidden" name="token" value="<?= e($token) ?>">
+    <input type="hidden" name="action" value="preview">
+    <input type="hidden" name="op">
+    <input type="hidden" name="keys">
+  </form>
+  <div class="bulk" id="bulk" hidden>
+    <span id="bulk-count"></span>
+    <button type="button" data-bulk="queue">Queue selected</button>
+    <button type="button" data-bulk="keep" class="button secondary">Keep selected</button>
+    <button type="button" id="bulk-clear" class="button secondary">Clear</button>
   </div>
 <?php endif; ?>
 
@@ -401,7 +552,7 @@ function onOff(bool $on): string
   // Sorting: click a header; click again to reverse.
   table.tHead.addEventListener('click', ev => {
     const th = ev.target.closest('th');
-    if (!th) return;
+    if (!th || !th.dataset.key) return;
     const key = th.dataset.key;
     const dir = th.dataset.dir === 'desc' ? 'asc' : (th.dataset.dir === 'asc' ? 'desc' : (numeric.has(key) && !ascFirst.has(key) ? 'desc' : 'asc'));
     table.querySelectorAll('th').forEach(h => delete h.dataset.dir);
@@ -437,7 +588,53 @@ function onOff(bool $on): string
       if (ok) shown++;
     }
     fCount.textContent = `${shown} of ${rows.length} shown`;
+    updateBulk();
   }
+
+  // Selection and actions. Only visible rows can be selected with "select all".
+  const selAll = document.getElementById('sel-all');
+  const bulk = document.getElementById('bulk');
+  const bulkCount = document.getElementById('bulk-count');
+  const form = document.getElementById('action-form');
+  const fmtGb = gb => gb >= 1024 ? (gb / 1024).toFixed(2) + ' TB' : gb.toFixed(1) + ' GB';
+  // Hidden (filtered-out) rows never take part in an action, even if ticked earlier.
+  const selected = () => rows.filter(r => !r.hidden && r.querySelector('.row-sel').checked);
+  function updateBulk() {
+    const sel = selected();
+    bulk.hidden = sel.length === 0;
+    const size = sel.reduce((t, r) => t + (parseFloat(r.dataset.size) || 0), 0);
+    bulkCount.textContent = `${sel.length} selected · ${fmtGb(size)}`;
+    syncSelectAll();
+  }
+  function syncSelectAll() {
+    if (!selAll) return;
+    const visible = rows.filter(r => !r.hidden);
+    const checked = visible.filter(r => r.querySelector('.row-sel').checked).length;
+    selAll.checked = visible.length > 0 && checked === visible.length;
+    selAll.indeterminate = checked > 0 && checked < visible.length;
+  }
+  function submitAction(op, keys) {
+    form.elements.op.value = op;
+    form.elements.keys.value = keys.join(',');
+    form.submit();
+  }
+  selAll.addEventListener('change', () => {
+    rows.forEach(r => { if (!r.hidden) r.querySelector('.row-sel').checked = selAll.checked; });
+    updateBulk();
+  });
+  tbody.addEventListener('change', ev => { if (ev.target.classList.contains('row-sel')) updateBulk(); });
+  tbody.addEventListener('click', ev => {
+    const btn = ev.target.closest('button[data-op]');
+    if (btn) submitAction(btn.dataset.op, [btn.closest('tr').dataset.rk]);
+  });
+  bulk.addEventListener('click', ev => {
+    const btn = ev.target.closest('button[data-bulk]');
+    if (btn) submitAction(btn.dataset.bulk, selected().map(r => r.dataset.rk));
+  });
+  document.getElementById('bulk-clear').addEventListener('click', () => {
+    rows.forEach(r => r.querySelector('.row-sel').checked = false);
+    updateBulk();
+  });
   [fVerdict, fType, fUnwatched].forEach(el => el.addEventListener('change', filter));
   fSearch.addEventListener('input', filter);
   filter();

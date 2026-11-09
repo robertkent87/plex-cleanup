@@ -27,18 +27,21 @@ const REPORT_COLUMNS = [
     'keep',              // 'yes' if labelled keep
     'queued_date',       // YYYY-MM-DD from a queued- label
     'in_leaving_soon',   // 'yes' if in the library's Leaving Soon collection
+    'library',           // Plex library name, e.g. "TV Shows"
+    'section_key',       // Plex library section key
 ];
 
 const REPORT_CACHE = __DIR__ . '/../data/report.json';
 
-/** Minimal JSON GET with cURL. */
-function getJson(string $url, array $headers = []): array
+/** Minimal JSON request with cURL (GET by default). An empty response body returns []. */
+function getJson(string $url, array $headers = [], string $method = 'GET'): array
 {
     $ch = curl_init($url);
     curl_setopt_array($ch, [
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_HTTPHEADER     => array_merge(['Accept: application/json'], $headers),
         CURLOPT_TIMEOUT        => 30,
+        CURLOPT_CUSTOMREQUEST  => $method,
     ]);
     $body = curl_exec($ch);
     if ($body === false) {
@@ -48,9 +51,22 @@ function getJson(string $url, array $headers = []): array
     curl_close($ch);
 
     if ($code >= 400) {
-        throw new RuntimeException("HTTP $code from $url");
+        throw new RuntimeException("HTTP $code from " . preg_replace('/([?&](api_key|X-Plex-Token)=)[^&]+/', '$1…', $url));
     }
-    return json_decode($body, true, 512, JSON_THROW_ON_ERROR);
+    return trim($body) === '' ? [] : json_decode($body, true, 512, JSON_THROW_ON_ERROR);
+}
+
+/** Send a change to Plex (PUT, POST or DELETE). Only src/queue.php should call this. */
+function plexWrite(string $method, string $path, array $query = []): array
+{
+    $plexUrl   = rtrim($_ENV['PLEX_URL'] ?? '', '/');
+    $plexToken = $_ENV['PLEX_TOKEN'] ?? '';
+    if ($plexUrl === '' || $plexToken === '') {
+        throw new RuntimeException('PLEX_URL and PLEX_TOKEN must be set in .env');
+    }
+    // Keys are sent as-is (Plex's edit parameters look like label[0].tag.tag); values are encoded.
+    $qs = implode('&', array_map(fn($k, $v) => $k . '=' . rawurlencode((string) $v), array_keys($query), $query));
+    return getJson($plexUrl . $path . ($qs !== '' ? "?$qs" : ''), ['X-Plex-Token: ' . $plexToken], $method);
 }
 
 function plex(string $path, array $query = []): array
@@ -234,7 +250,8 @@ function buildReport(): array
             'includeGuids' => 1,
         ])['MediaContainer']['Metadata'] ?? [];
         $labels  = trackedLabels((string) $section['key'], $plexType);
-        $leaving = leavingSoonMembers((string) $section['key'], config('collections.' . $section['type']));
+        $colName = config('collections')[$section['title']] ?? null;
+        $leaving = $colName !== null ? leavingSoonMembers((string) $section['key'], $colName) : [];
 
         foreach ($items as $item) {
             $isShow  = $section['type'] === 'show';
@@ -307,6 +324,8 @@ function buildReport(): array
                 $isKept ? 'yes' : '',
                 $queuedDate,
                 isset($leaving[(string) $item['ratingKey']]) ? 'yes' : '',
+                $section['title'],
+                (string) $section['key'],
             ]);
         }
     }

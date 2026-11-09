@@ -85,15 +85,21 @@ function validateConfig(array $c): array
     $check('countdown_days', 'int', true);
     $check('labels.keep', 'string');
     $check('labels.queue_prefix', 'string');
-    $check('collections.movie', 'string');
-    $check('collections.show', 'string');
     $check('dry_run', 'bool');
+
+    $cols = $get('collections');
+    if (!is_array($cols) || !$cols) {
+        $errors[] = 'collections must list at least one library => collection name';
+    } else {
+        foreach ($cols as $library => $name) {
+            if (!is_string($library) || trim($library) === '' || !is_string($name) || trim($name) === '') {
+                $errors[] = 'collections entries must be "Library name" => "Collection name" (got ' . json_encode([$library => $name]) . ')';
+            }
+        }
+    }
 
     if (is_string($get('labels.keep')) && $get('labels.keep') === $get('labels.queue_prefix')) {
         $errors[] = 'labels.keep and labels.queue_prefix must differ';
-    }
-    if (is_string($get('collections.movie')) && $get('collections.movie') === $get('collections.show')) {
-        $errors[] = 'collections.movie and collections.show must differ';
     }
     return $errors;
 }

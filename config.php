@@ -45,11 +45,16 @@ return [
         'keep'         => 'keep',
         'queue_prefix' => 'queued-',  // followed by YYYY-MM-DD
     ],
+    // Leaving Soon collection for each Plex library, keyed by library name.
+    // The collections must already exist in Plex (create them by hand).
+    // Titles in a library not listed here cannot be queued.
     'collections' => [
-        'movie' => 'Movies Leaving Soon',
-        'show'  => 'Series Leaving Soon',
+        'Movies'   => 'Movies Leaving Soon',
+        'TV Shows' => 'Series Leaving Soon',
+        'Anime'    => 'Anime Leaving Soon',
     ],
 
-    // Actions that change Plex or the file share report only, unless this is false.
+    // While true, Queue and Keep on the review page (and sync.php) only preview
+    // what would change in Plex. Set to false to allow changes to be applied.
     'dry_run' => true,
 ];
