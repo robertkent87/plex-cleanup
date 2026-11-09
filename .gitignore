@@ -11,6 +11,7 @@
 *.sqlite
 *.sqlite3
 *.db
+/data/
 
 # Logs and cache
 *.log
