@@ -1,0 +1,4 @@
+# Only public/ is meant to be served. Without this, Laragon's localhost site
+# (C:\laragon\www) serves .env, src/, data/ and vendor/ directly.
+RewriteEngine On
+RewriteRule ^(?!public/) - [F]
