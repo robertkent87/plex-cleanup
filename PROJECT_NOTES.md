@@ -22,13 +22,21 @@ A monthly review tool for a Plex library stored on an external drive. It flags m
 
 ## Decisions
 
+- **Safety rules (agreed 2026-11-09, non-negotiable):**
+  1. Nothing is ever deleted automatically. Every deletion needs explicit confirmation on the review page.
+  2. Every title in the library can be reviewed and marked Keep, not only candidates. A kept title is never considered for removal again.
+  3. The Leaving Soon collections are the only route to deletion. A title is only eligible for deletion after it has been in `Movies Leaving Soon` or `Series Leaving Soon` with a `queued-` label for the full countdown. The deletion step enforces this itself and refuses anything else, whatever asks for it.
+- **Approve first (agreed 2026-11-09):** the rule engine only flags candidates on the review page. Nothing enters a Leaving Soon collection until the user presses Queue. Keep remains available before queueing, during the countdown, and after it expires until deletion is confirmed. Scheduled runs never queue titles; they only refresh the report and reconcile labels with collection membership.
 - **Keep marker:** a Plex label named `keep` on the movie or show. A kept title leaves its Leaving Soon collection, its `queued-` label is removed, and it is excluded from future candidate checks. Plex is the source of truth, because not every title is in Radarr or Sonarr.
 - **Thresholds (configurable, starting values):**
   - Never watched and added more than 6 months ago: candidate
-  - Watched once, last watched more than 12 months ago, added more than 6 months ago: candidate
+  - Movies: watched at most once, last watched more than 12 months ago, added more than 6 months ago: candidate. Movies watched more than once are never candidates.
+  - Shows: last watched (any episode, any user) more than 12 months ago and added more than 6 months ago: candidate, however much was watched. This covers partly watched and fully watched shows; the play limit does not apply to shows, because their plays are counted per episode.
+  - Fully watched titles are not exempt: they are flagged, and the user keeps archive titles with Keep.
+  - A title marked as watched with no recorded plays counts as watched (use the watched episode count, or treat a movie as one play).
 - **Shows are judged as a whole:**
-  - Use Plex `leafCount` and `viewedLeafCount` to see how much was watched
-  - Use Plex `lastViewedAt` for the last time anything in the show was played
+  - Use Plex `leafCount` and `viewedLeafCount` (and all-account history) to see how much was watched
+  - Use the latest play across all accounts for the last time anything in the show was played
   - Use TMDB `status` and `in_production` to decide whether the show is still airing; a show still in production is never a candidate
   - Size is the sum of all episode files
 - **Ranking:** candidates sorted by size, largest first
@@ -63,11 +71,10 @@ A monthly review tool for a Plex library stored on an external drive. It flags m
 5. Build the local review page on top of the rule engine and queue sync, with the candidates table, due-for-deletion section, row actions, and run button.
 6. Add the deletion step: delete files from the share and refresh the Plex library, dry-run first.
 7. Check whether Recommended promotion is available on this Plex version, and promote the two collections if so.
-8. Schedule the monthly `report.php` and `sync.php` runs.
+8. Schedule the monthly `report.php` and `sync.php` runs (report refresh and label reconciliation only; never queueing or deletion).
 
 ## Open questions
 
-- Exact behaviour for shows that are partly watched.
-- Whether Plex `addedAt` values are reliable after file moves.
+- Whether Plex `addedAt` values are reliable after file moves. The current added dates are spread across years, which looks healthy; spot-check a few long-held titles.
 - Whether Plex on this server supports promoting a collection to Recommended, and where it then appears.
 - Whether the TV library UI shows collections on this Plex version, and where promoted TV collections appear.
