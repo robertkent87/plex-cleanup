@@ -82,7 +82,11 @@ function validateConfig(array $c): array
     $check('tmdb.protect_in_production', 'bool');
     $check('tmdb.protected_statuses', 'string[]');
     $check('tmdb.protect_unknown', 'bool');
-    $check('countdown_days', 'int', true);
+    // 0 is allowed: queued titles are due straight away (useful for testing deletion).
+    $check('countdown_days', 'int');
+    if (is_int($get('countdown_days')) && $get('countdown_days') < 0) {
+        $errors[] = 'countdown_days must be 0 or more (got ' . $get('countdown_days') . ')';
+    }
     $check('labels.keep', 'string');
     $check('labels.queue_prefix', 'string');
     $check('dry_run', 'bool');
