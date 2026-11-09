@@ -203,7 +203,7 @@ function logDeletion(array $entry): void
 function applyDeletionPlan(array $plan): array
 {
     if (config('dry_run')) {
-        throw new RuntimeException('dry_run is true in config.php, so nothing was moved.');
+        throw new RuntimeException('Dry run is on, so nothing was moved. Turn on changes in the banner and try again.');
     }
     $share = shareRoot();
     $trash = trashRoot() . '\\' . $plan['date'];
@@ -327,7 +327,7 @@ function trashBatches(?DateTimeImmutable $today = null): array
 function emptyTrash(?DateTimeImmutable $today = null): array
 {
     if (config('dry_run')) {
-        throw new RuntimeException('dry_run is true in config.php, so nothing was deleted.');
+        throw new RuntimeException('Dry run is on, so nothing was deleted. Turn on changes in the banner and try again.');
     }
     $root = trashRoot();
     $done = ['batches' => [], 'bytes' => 0];

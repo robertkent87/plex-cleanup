@@ -70,7 +70,11 @@ return [
     ],
 
     // While true, every action on the review page (Queue, Keep, Sync labels, Delete,
-    // Empty trash) and sync.php only previews what would change. Set to false to
-    // allow changes to be applied.
+    // Empty trash) and sync.php only previews what would change. This is the default:
+    // the review page can switch changes on for a while without editing this file.
     'dry_run' => true,
+
+    // How long "Turn on changes" on the review page lasts before it switches back to
+    // dry run by itself (it also ends when the browser is closed).
+    'live_mode_minutes' => 30,
 ];

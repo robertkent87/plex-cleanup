@@ -71,6 +71,7 @@ A monthly review tool for a Plex library stored on an external drive. It flags m
 - Home screen promotion (2026-11-09, step 7): done by hand in Plex for all three Leaving Soon collections. Nothing is needed in the tool; it keeps the collections' contents up to date and Plex shows them where they are promoted.
 - Design agreed: Leaving Soon collections per library, `queued-YYYY-MM-DD` and `keep` labels, deletion via a trash folder on the share, and a localhost review page.
 - All planned steps are complete and merged to `main` (2026-11-09).
+- Dry-run switch (2026-11-09): the banner has **Turn on changes** (asks for confirmation) and **Back to dry run**. Turning changes on lasts `live_mode_minutes` (30) for the current browser session only, with a countdown in the banner, then reverts by itself; closing the browser also ends it. `config.php`'s `dry_run` stays the default and is never edited by the page; `sync.php` still follows `config.php`. The override is applied through `dryRunOverride()` in `src/config.php`, so every safety check in `src/queue.php` and `src/delete.php` sees the effective value.
 
 ## Next steps
 

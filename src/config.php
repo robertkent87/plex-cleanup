@@ -7,9 +7,14 @@
  */
 function config(?string $key = null): mixed
 {
-    static $config = null;
-    if ($config === null) {
-        $config = loadConfig(dirname(__DIR__) . '/config.php');
+    static $loaded = null;
+    if ($loaded === null) {
+        $loaded = loadConfig(dirname(__DIR__) . '/config.php');
+    }
+    // A dry-run override (from the review page's mode switch) applies for this request only.
+    $config = $loaded;
+    if (($override = dryRunOverride()) !== null) {
+        $config['dry_run'] = $override;
     }
     if ($key === null) {
         return $config;
@@ -20,6 +25,21 @@ function config(?string $key = null): mixed
             throw new RuntimeException("Unknown config key: $key");
         }
         $value = $value[$part];
+    }
+    return $value;
+}
+
+/**
+ * Get, or set with $set = true/false, a dry_run value that replaces config.php's for this
+ * request. Pass $clear = true to remove it. config.php itself is never changed.
+ */
+function dryRunOverride(?bool $set = null, bool $clear = false): ?bool
+{
+    static $value = null;
+    if ($clear) {
+        $value = null;
+    } elseif ($set !== null) {
+        $value = $set;
     }
     return $value;
 }
@@ -90,6 +110,7 @@ function validateConfig(array $c): array
     $check('labels.keep', 'string');
     $check('labels.queue_prefix', 'string');
     $check('dry_run', 'bool');
+    $check('live_mode_minutes', 'int', true);
     $check('deletion.plex_path_prefix', 'string');
     $check('deletion.share_path', 'string');
     $check('deletion.trash_folder', 'string');

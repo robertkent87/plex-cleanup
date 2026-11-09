@@ -202,7 +202,7 @@ function planSizeGb(array $plan, array $reportRows): float
 function applyPlan(array $plan): array
 {
     if (config('dry_run')) {
-        throw new RuntimeException('dry_run is true in config.php, so no changes were made.');
+        throw new RuntimeException('Dry run is on, so no changes were made. Turn on changes in the banner and try again.');
     }
     $machine = plex('/')['MediaContainer']['machineIdentifier'] ?? null;
     if (!$machine) {

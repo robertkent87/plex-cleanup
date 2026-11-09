@@ -33,6 +33,23 @@ try {
     $configError = $e->getMessage();
 }
 
+// Mode switch: changes can be turned on from the banner for live_mode_minutes, for this
+// browser session only (the session cookie ends when the browser closes). config.php's
+// dry_run is the default and is never edited by the page.
+$liveUntil = (int) ($_SESSION['live_until'] ?? 0);
+if ($liveUntil && $liveUntil <= time()) {
+    unset($_SESSION['live_until']);   // expired: back to the default
+    $liveUntil = 0;
+}
+if ($config) {
+    if ($liveUntil) {
+        dryRunOverride(false);
+    } elseif (!empty($_SESSION['force_dry'])) {
+        dryRunOverride(true);
+    }
+    $config = config();
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (!hash_equals($token, (string) ($_POST['token'] ?? ''))) {
         http_response_code(400);
@@ -42,6 +59,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
     $op     = (string) ($_POST['op'] ?? '');
     $keys   = array_values(array_filter(explode(',', (string) ($_POST['keys'] ?? '')), 'ctype_digit'));
+
+    if ($config && $action === 'mode_live') {
+        $minutes = $config['live_mode_minutes'];
+        $_SESSION['live_until'] = time() + $minutes * 60;
+        unset($_SESSION['force_dry']);
+        $_SESSION['flash'] = ['ok', "Changes are on for $minutes minutes. Every action still shows a preview first."];
+        header("Location: $self");
+        exit;
+    }
+    if ($config && $action === 'mode_dry') {
+        unset($_SESSION['live_until']);
+        $_SESSION['force_dry'] = true;
+        $_SESSION['flash'] = ['ok', 'Back to dry run: actions only show previews.'];
+        header("Location: $self");
+        exit;
+    }
 
     try {
         if ($action === 'generate') {
@@ -284,6 +317,9 @@ function onOff(bool $on): string
   .mode-banner code { background: rgba(0, 0, 0, .25); }
   .mode-banner.dry { background: var(--accent); color: var(--accent-text); }
   .mode-banner.live { background: #b3261e; color: #fff; }
+  .mode-form { display: inline; margin-left: 12px; }
+  .mode-button { padding: 4px 12px; font-size: 13px; border-radius: 5px; background: rgba(0, 0, 0, .75); color: #fff; border: 1px solid rgba(255, 255, 255, .3); }
+  .mode-button:hover { background: #000; filter: none; }
   body.mode-dry::after {
     content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 30;
     border: 4px solid var(--accent);
@@ -359,12 +395,26 @@ function onOff(bool $on): string
 <?php if ($config && $config['dry_run']): ?>
   <div class="mode-banner dry" role="status">
     <strong>Dry run</strong> — every action only shows a preview. Nothing will change in Plex or on the drive.
-    <span class="hint">To make changes, set <code>'dry_run' =&gt; false</code> in <code>config.php</code> and reload.</span>
+    <form method="post" class="mode-form"
+          onsubmit="return confirm('Turn on changes for <?= (int) $config['live_mode_minutes'] ?> minutes?\n\nConfirmed actions will change Plex, and Delete will move files to the trash. Every action still shows a preview first.');">
+      <input type="hidden" name="token" value="<?= e($token) ?>">
+      <input type="hidden" name="action" value="mode_live">
+      <button type="submit" class="mode-button">Turn on changes</button>
+    </form>
   </div>
 <?php elseif ($config): ?>
   <div class="mode-banner live" role="status">
     <strong>Changes enabled</strong> — confirmed actions change Plex and move files on the drive.
-    <span class="hint">Set <code>'dry_run' =&gt; true</code> in <code>config.php</code> to go back to previews only.</span>
+    <?php if ($liveUntil): ?>
+      <span class="hint" id="live-left" data-until="<?= $liveUntil ?>">Switches back to dry run in <?= max(1, (int) ceil(($liveUntil - time()) / 60)) ?> min</span>
+    <?php else: ?>
+      <span class="hint">(<code>'dry_run' =&gt; false</code> is set in <code>config.php</code>)</span>
+    <?php endif; ?>
+    <form method="post" class="mode-form">
+      <input type="hidden" name="token" value="<?= e($token) ?>">
+      <input type="hidden" name="action" value="mode_dry">
+      <button type="submit" class="mode-button">Back to dry run</button>
+    </form>
   </div>
 <?php endif; ?>
 
@@ -453,7 +503,7 @@ function onOff(bool $on): string
           <button type="submit">Apply changes to <?= $pCount ?> title<?= $pCount === 1 ? '' : 's' ?></button>
         </form>
       <?php elseif ($pCount): ?>
-        <p class="msg error">Dry run is on, so nothing will be changed. To apply changes, set <code>'dry_run' =&gt; false</code> in <code>config.php</code>, reload, and run this again.</p>
+        <p class="msg error">Dry run is on, so nothing will be changed. To apply changes, use <strong>Turn on changes</strong> in the banner, then run this again.</p>
       <?php endif; ?>
       <a class="button secondary" href="<?= e($self) ?>"><?= $pCount && !$config['dry_run'] ? 'Cancel' : 'Back to list' ?></a>
     </div>
@@ -515,7 +565,7 @@ function onOff(bool $on): string
           <button type="submit" class="danger">Move <?= $dCount ?> title<?= $dCount === 1 ? '' : 's' ?> to trash</button>
         </form>
       <?php elseif ($dCount): ?>
-        <p class="msg error">Dry run is on, so nothing will be moved. To move files, set <code>'dry_run' =&gt; false</code> in <code>config.php</code>, reload, and run this again.</p>
+        <p class="msg error">Dry run is on, so nothing will be moved. To move files, use <strong>Turn on changes</strong> in the banner, then run this again.</p>
       <?php endif; ?>
       <a class="button secondary" href="<?= e($self) ?>"><?= $dCount && !$config['dry_run'] ? 'Cancel' : 'Back to list' ?></a>
     </div>
@@ -752,6 +802,22 @@ function onOff(bool $on): string
 
 </main>
 
+<script>
+// Live mode countdown: keep the minutes current, and reload when it runs out so the
+// page never shows "changes enabled" after the server has switched back to dry run.
+(() => {
+  const el = document.getElementById('live-left');
+  if (!el) return;
+  const until = parseInt(el.dataset.until, 10) * 1000;
+  const tick = () => {
+    const left = until - Date.now();
+    if (left <= 0) { location.href = location.pathname; return; }
+    el.textContent = `Switches back to dry run in ${Math.ceil(left / 60000)} min`;
+  };
+  tick();
+  setInterval(tick, 15000);
+})();
+</script>
 <script>
 (() => {
   const table = document.getElementById('report');
