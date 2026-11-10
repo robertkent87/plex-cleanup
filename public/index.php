@@ -249,6 +249,16 @@ function onOff(bool $on): string
   }
   button:hover { filter: brightness(1.08); }
   button:disabled { cursor: progress; opacity: .7; }
+  /* Busy state: a button that was pressed and is waiting for the server. */
+  button.busy { display: inline-flex; align-items: center; gap: 8px; opacity: 1; }
+  button.busy::before {
+    content: ""; width: 1em; height: 1em; flex: none; border-radius: 50%;
+    border: 2px solid currentColor; border-right-color: transparent;
+    animation: spin .7s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { button.busy::before { animation-duration: 2s; } }
+  body.busy, body.busy * { cursor: progress !important; }
   .button.secondary { background: var(--surface-2); color: var(--text); border-color: var(--border); font-weight: 500; }
   .button.secondary:hover { text-decoration: none; border-color: var(--muted); }
   input[type="search"], select {
@@ -434,14 +444,14 @@ function onOff(bool $on): string
     <?php if ($cache): ?>
       <span class="muted">Last generated <?= e(date('jS M Y, H:i', $cache['generated_at'])) ?></span>
       <a class="button secondary" href="?format=csv">Download CSV</a>
-      <form method="post">
+      <form method="post" data-busy="Checking labels…">
         <input type="hidden" name="token" value="<?= e($token) ?>">
         <input type="hidden" name="action" value="preview">
         <input type="hidden" name="op" value="reconcile">
         <button type="submit" class="button secondary" title="Match queued- labels to the Leaving Soon collections">Sync labels</button>
       </form>
     <?php endif; ?>
-    <form method="post" onsubmit="this.querySelector('button').disabled = true; this.querySelector('button').textContent = 'Generating… (about a minute)';">
+    <form method="post" data-busy="Generating… (about a minute)">
       <input type="hidden" name="token" value="<?= e($token) ?>">
       <input type="hidden" name="action" value="generate">
       <button type="submit"><?= $cache ? 'Regenerate report' : 'Generate report' ?></button>
@@ -503,7 +513,7 @@ function onOff(bool $on): string
 
     <div class="preview-actions">
       <?php if ($pCount && !$config['dry_run']): ?>
-        <form method="post" onsubmit="this.querySelector('button').disabled = true; this.querySelector('button').textContent = 'Applying…';">
+        <form method="post" data-busy="Applying…">
           <input type="hidden" name="token" value="<?= e($token) ?>">
           <input type="hidden" name="action" value="apply">
           <input type="hidden" name="op" value="<?= e($preview['action']) ?>">
@@ -563,7 +573,7 @@ function onOff(bool $on): string
 
     <div class="preview-actions">
       <?php if ($dCount && !$config['dry_run']): ?>
-        <form method="post" class="confirm-form" onsubmit="this.querySelector('button').disabled = true; this.querySelector('button').textContent = 'Moving…';">
+        <form method="post" class="confirm-form" data-busy="Moving…">
           <input type="hidden" name="token" value="<?= e($token) ?>">
           <input type="hidden" name="action" value="delete_apply">
           <input type="hidden" name="keys" value="<?= e(implode(',', $deletePreview['keys'])) ?>">
@@ -605,7 +615,7 @@ function onOff(bool $on): string
     <?php endif; ?>
     <div class="preview-actions">
       <?php if ($ready && !$config['dry_run']): ?>
-        <form method="post" class="confirm-form" onsubmit="this.querySelector('button').disabled = true; this.querySelector('button').textContent = 'Deleting…';">
+        <form method="post" class="confirm-form" data-busy="Deleting…">
           <input type="hidden" name="token" value="<?= e($token) ?>">
           <input type="hidden" name="action" value="trash_apply">
           <label>Type <strong><?= count($ready) ?></strong> to confirm
@@ -648,7 +658,7 @@ function onOff(bool $on): string
         <div class="sub">
           <?= count($trash) ?> batch<?= count($trash) === 1 ? '' : 'es' ?> · <?= gb($trashTotals['ready'] / 1024 ** 3) ?> can be emptied
           <?php if ($trash): ?>
-            <form method="post" class="inline">
+            <form method="post" class="inline" data-busy="Reading trash…">
               <input type="hidden" name="token" value="<?= e($token) ?>">
               <input type="hidden" name="action" value="trash_preview">
               <button type="submit" class="mini secondary">Review trash</button>
@@ -828,6 +838,37 @@ function onOff(bool $on): string
 </main>
 
 <script>
+// Busy state: once a request is sent, the pressed button shows a spinner and every
+// other button is disabled, so it's clear something is happening and nothing is sent twice.
+(() => {
+  let busy = null;   // { btn, label, disabled } while waiting
+  window.isBusy = () => busy !== null;
+  window.showBusy = (btn, label) => {
+    if (busy) return;
+    const disabled = [...document.querySelectorAll('main button')].filter(b => !b.disabled);
+    disabled.forEach(b => { b.disabled = true; });
+    busy = { btn, label: btn ? btn.innerHTML : '', disabled };
+    document.body.classList.add('busy');
+    if (btn) { btn.classList.add('busy'); btn.textContent = label; }
+  };
+  // Forms with data-busy="label" show it on their submit button when sent.
+  document.addEventListener('submit', ev => {
+    const f = ev.target;
+    if (ev.defaultPrevented || !f.dataset.busy) return;
+    showBusy(ev.submitter || f.querySelector('button[type="submit"]'), f.dataset.busy);
+  });
+  // Coming back with the browser's Back button can restore the page as it was left,
+  // spinner and all, so undo the busy state.
+  window.addEventListener('pageshow', ev => {
+    if (!ev.persisted || !busy) return;
+    busy.disabled.forEach(b => { b.disabled = false; });
+    if (busy.btn) { busy.btn.classList.remove('busy'); busy.btn.innerHTML = busy.label; }
+    document.body.classList.remove('busy');
+    busy = null;
+  });
+})();
+</script>
+<script>
 // Live mode countdown: keep the minutes current, and reload when it runs out so the
 // page never shows "changes enabled" after the server has switched back to dry run.
 (() => {
@@ -934,7 +975,9 @@ function onOff(bool $on): string
     selAll.indeterminate = checkedOnPage > 0 && !pageFull;
   }
 
-  function submitAction(op, keys) {
+  function submitAction(op, keys, btn, label) {
+    if (isBusy()) return;
+    showBusy(btn, label);
     // Delete has its own preview (with typed confirmation); the others share one.
     form.elements.action.value = op === 'delete' ? 'delete_preview' : 'preview';
     form.elements.op.value = op;
@@ -986,8 +1029,9 @@ function onOff(bool $on): string
   });
   tbody.addEventListener('change', ev => { if (ev.target.classList.contains('row-sel')) updateBulk(); });
   tbody.addEventListener('click', ev => {
+    if (isBusy()) return;
     const btn = ev.target.closest('button[data-op]');
-    if (btn) { submitAction(btn.dataset.op, [btn.closest('tr').dataset.rk]); return; }
+    if (btn) { submitAction(btn.dataset.op, [btn.closest('tr').dataset.rk], btn, 'Loading…'); return; }
     // A click elsewhere on the row toggles its checkbox. Links, buttons and the
     // checkbox itself keep their own behaviour, and dragging to select text doesn't toggle.
     if (ev.target.closest('a, button, input, label, select, textarea')) return;
@@ -1000,7 +1044,7 @@ function onOff(bool $on): string
   });
   bulk.addEventListener('click', ev => {
     const btn = ev.target.closest('button[data-bulk]');
-    if (btn) submitAction(btn.dataset.bulk, selected().map(r => r.dataset.rk));
+    if (btn) submitAction(btn.dataset.bulk, selected().map(r => r.dataset.rk), btn, 'Preparing preview…');
   });
   $('bulk-clear').addEventListener('click', () => {
     rows.forEach(r => { r.querySelector('.row-sel').checked = false; });
