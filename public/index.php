@@ -670,7 +670,7 @@ function onOff(bool $on): string
   </section>
 
   <?php if ($config): $c = $config['rules']; ?>
-  <details class="card rules" open>
+  <details class="card rules">
     <summary>
       <span>Rules</span>
       <span class="muted">Edit <code>config.php</code> and reload to apply changes</span>
@@ -882,6 +882,18 @@ function onOff(bool $on): string
   };
   tick();
   setInterval(tick, 15000);
+})();
+</script>
+<script>
+// Rules panel: starts collapsed, but remembers in this browser if it was left open.
+(() => {
+  const panel = document.querySelector('details.rules');
+  if (!panel) return;
+  const STORE = 'plex-cleanup-rules-open';
+  try { panel.open = localStorage.getItem(STORE) === '1'; } catch (e) { /* ignore */ }
+  panel.addEventListener('toggle', () => {
+    try { localStorage.setItem(STORE, panel.open ? '1' : '0'); } catch (e) { /* ignore */ }
+  });
 })();
 </script>
 <script>
