@@ -88,12 +88,17 @@ function sidecarFiles(string $videoPath): array
     return $out;
 }
 
-/** Video file paths (Plex's paths) for a movie (all versions) or show (all episodes). */
-function plexFilesFor(string $ratingKey, string $type): array
+/**
+ * Video file paths (Plex's paths) for a movie (all versions) or show (all episodes).
+ * Pass a movie's metadata as $meta if it has already been fetched, to skip asking Plex again.
+ */
+function plexFilesFor(string $ratingKey, string $type, ?array $meta = null): array
 {
-    $items = $type === 'show'
-        ? plex("/library/metadata/$ratingKey/allLeaves")['MediaContainer']['Metadata'] ?? []
-        : plex("/library/metadata/$ratingKey")['MediaContainer']['Metadata'] ?? [];
+    $items = match (true) {
+        $type === 'show' => plex("/library/metadata/$ratingKey/allLeaves")['MediaContainer']['Metadata'] ?? [],
+        $meta !== null   => [$meta],
+        default          => plex("/library/metadata/$ratingKey")['MediaContainer']['Metadata'] ?? [],
+    };
     $files = [];
     foreach ($items as $item) {
         foreach ($item['Media'] ?? [] as $media) {
@@ -117,9 +122,13 @@ function buildDeletionPlan(array $ratingKeys, ?DateTimeImmutable $today = null):
     $today ??= new DateTimeImmutable('today');
     $plan = ['date' => $today->format('Y-m-d'), 'items' => [], 'skipped' => []];
     $countdown = config('countdown_days');
+    $metas     = fetchMetadata($ratingKeys);
+    // Last viewed dates from the saved report, read once rather than once per title.
+    $reportLastViewed = array_column(loadReportCache()['rows'] ?? [], 'last_viewed', 'rating_key');
 
-    foreach (array_unique(array_map('strval', $ratingKeys)) as $rk) {
-        $s = itemState($rk);
+    foreach ($metas as $rk => $meta) {
+        $rk = (string) $rk;
+        $s  = $meta === null ? null : stateFromMetadata($meta);
         $skip = function (string $why) use (&$plan, $rk, $s): void {
             $plan['skipped'][$rk] = ['title' => $s['title'] ?? "#$rk", 'reason' => $why];
         };
@@ -141,7 +150,7 @@ function buildDeletionPlan(array $ratingKeys, ?DateTimeImmutable $today = null):
 
         $files = [];
         $problem = null;
-        foreach (plexFilesFor($rk, $s['type']) as $f) {
+        foreach (plexFilesFor($rk, $s['type'], $meta) as $f) {
             $local = localPath($f['plex']);
             $inLib = $local !== null && array_filter($roots, fn($r) => isInside($local, $r));
             if (!$inLib) {
@@ -160,10 +169,8 @@ function buildDeletionPlan(array $ratingKeys, ?DateTimeImmutable $today = null):
         if (!array_filter($files, fn($f) => $f['exists'])) { $skip('No files found on the share'); continue; }
 
         $warnings = [];
-        $meta = plex("/library/metadata/$rk")['MediaContainer']['Metadata'][0] ?? [];
         $lastViewed = isset($meta['lastViewedAt']) ? date('Y-m-d', (int) $meta['lastViewedAt']) : '';
-        $row = array_values(array_filter(loadReportCache()['rows'] ?? [], fn($r) => $r['rating_key'] === $rk))[0] ?? null;
-        $lastViewed = max($lastViewed, (string) ($row['last_viewed'] ?? ''));
+        $lastViewed = max($lastViewed, (string) ($reportLastViewed[$rk] ?? ''));
         if ($lastViewed !== '' && $lastViewed >= $queued) {
             $warnings[] = 'Watched since queued (' . niceDate($lastViewed) . ')';
         }

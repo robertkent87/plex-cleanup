@@ -21,14 +21,41 @@ const QUEUE_ACTIONS = [
 /** Current Plex state of one title: labels, collections and library. Null if Plex doesn't know it. */
 function itemState(string $ratingKey): ?array
 {
-    try {
-        $m = plex("/library/metadata/$ratingKey")['MediaContainer']['Metadata'][0] ?? null;
-    } catch (RuntimeException $e) {
-        return null;
+    return itemStates([$ratingKey])[$ratingKey];
+}
+
+/** Current Plex state of several titles, as [ratingKey => state or null], fetched in batches. */
+function itemStates(array $ratingKeys): array
+{
+    return array_map(
+        fn($m) => $m === null ? null : stateFromMetadata($m),
+        fetchMetadata($ratingKeys)
+    );
+}
+
+/**
+ * Full Plex metadata for several titles, as [ratingKey => metadata or null (not found)].
+ * Titles are requested one each but several at a time. (Comma-separated keys in one request
+ * were tried: Plex still prepares each title in turn, so a batch with a few slow titles
+ * timed out, and unlike single requests it didn't leave them fast for next time.)
+ */
+function fetchMetadata(array $ratingKeys): array
+{
+    $out = [];
+    foreach (array_unique(array_map('strval', $ratingKeys)) as $rk) {
+        $out[$rk] = "/library/metadata/$rk";
     }
-    if (!$m) {
-        return null;
+    $responses = plexMany(array_values($out));
+    foreach ($out as $rk => $path) {
+        $out[$rk] = $responses[$path]['MediaContainer']['Metadata'][0] ?? null;
     }
+    return $out;
+}
+
+/** Labels, collection and library of a title, from its Plex metadata. */
+function stateFromMetadata(array $m): array
+{
+    $ratingKey = (string) $m['ratingKey'];
     $keepLabel = config('labels.keep');
     $prefix    = config('labels.queue_prefix');
     $labels    = array_values(array_map(fn($t) => $t['tag'], $m['Label'] ?? []));
@@ -88,8 +115,8 @@ function buildPlan(string $action, array $ratingKeys, ?DateTimeImmutable $today 
         $ratingKeys = reconcileCandidates();
     }
 
-    foreach (array_unique(array_map('strval', $ratingKeys)) as $rk) {
-        $s = itemState($rk);
+    foreach (itemStates($ratingKeys) as $rk => $s) {
+        $rk = (string) $rk;
         if ($s === null) {
             $plan['skipped'][$rk] = ['title' => "#$rk", 'reason' => 'Not found in Plex (regenerate the report)'];
             continue;
@@ -273,8 +300,9 @@ function applyPlan(array $plan): array
 
     // 3. Re-read every title and check the result matches the plan.
     $states = [];
+    $after  = itemStates(array_keys($plan['items']));
     foreach ($plan['items'] as $rk => $item) {
-        $s = itemState((string) $rk);
+        $s = $after[(string) $rk] ?? null;
         if ($s !== null) {
             $states[$rk] = $s;
         }

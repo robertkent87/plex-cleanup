@@ -33,11 +33,18 @@ const REPORT_COLUMNS = [
 
 const REPORT_CACHE = __DIR__ . '/../data/report.json';
 
-/** Minimal JSON request with cURL (GET by default). An empty response body returns []. */
+/**
+ * Minimal JSON request with cURL (GET by default). An empty response body returns [].
+ * One cURL handle is shared for the whole request, so connections to Plex are kept
+ * open and reused instead of reconnecting for every call.
+ */
 function getJson(string $url, array $headers = [], string $method = 'GET'): array
 {
-    $ch = curl_init($url);
+    static $ch = null;
+    $ch ??= curl_init();
+    curl_reset($ch);   // clears options but keeps open connections
     curl_setopt_array($ch, [
+        CURLOPT_URL            => $url,
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_HTTPHEADER     => array_merge(['Accept: application/json'], $headers),
         CURLOPT_TIMEOUT        => 30,
@@ -48,7 +55,6 @@ function getJson(string $url, array $headers = [], string $method = 'GET'): arra
         throw new RuntimeException('cURL error: ' . curl_error($ch) . " ($url)");
     }
     $code = curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
-    curl_close($ch);
 
     if ($code >= 400) {
         throw new RuntimeException("HTTP $code from " . preg_replace('/([?&](api_key|X-Plex-Token)=)[^&]+/', '$1…', $url));
@@ -78,6 +84,59 @@ function plex(string $path, array $query = []): array
     }
     $url = $plexUrl . $path . ($query ? '?' . http_build_query($query) : '');
     return getJson($url, ['X-Plex-Token: ' . $plexToken]);
+}
+
+/**
+ * GET several Plex paths at once, a few requests in parallel, as [path => decoded JSON or
+ * null if that request failed]. Much faster than plex() in a loop when Plex is slow per
+ * item: the first detail request for a title can take seconds while Plex prepares it.
+ */
+function plexMany(array $paths, int $concurrency = 8): array
+{
+    $plexUrl   = rtrim($_ENV['PLEX_URL'] ?? '', '/');
+    $plexToken = $_ENV['PLEX_TOKEN'] ?? '';
+    if ($plexUrl === '' || $plexToken === '') {
+        throw new RuntimeException('PLEX_URL and PLEX_TOKEN must be set in .env');
+    }
+    $out     = array_fill_keys($paths, null);
+    $pending = array_keys($out);
+    $running = [];   // spl_object_id(handle) => path
+    $mh      = curl_multi_init();
+
+    $start = function () use (&$pending, &$running, $mh, $plexUrl, $plexToken): void {
+        $path = array_shift($pending);
+        $ch   = curl_init($plexUrl . $path);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_HTTPHEADER     => ['Accept: application/json', 'X-Plex-Token: ' . $plexToken],
+            CURLOPT_TIMEOUT        => 30,
+        ]);
+        curl_multi_add_handle($mh, $ch);
+        $running[spl_object_id($ch)] = $path;
+    };
+
+    while ($pending && count($running) < $concurrency) {
+        $start();
+    }
+    while ($running) {
+        curl_multi_exec($mh, $stillRunning);
+        curl_multi_select($mh, 1.0);
+        while ($info = curl_multi_info_read($mh)) {
+            $ch   = $info['handle'];
+            $path = $running[spl_object_id($ch)];
+            unset($running[spl_object_id($ch)]);
+            $body = curl_multi_getcontent($ch);
+            if ($info['result'] === CURLE_OK && curl_getinfo($ch, CURLINFO_RESPONSE_CODE) < 400 && trim((string) $body) !== '') {
+                $out[$path] = json_decode($body, true) ?: null;
+            }
+            curl_multi_remove_handle($mh, $ch);
+            if ($pending) {
+                $start();
+            }
+        }
+    }
+    curl_multi_close($mh);
+    return $out;
 }
 
 function tmdb(string $path, array $query = []): ?array
