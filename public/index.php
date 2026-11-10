@@ -293,6 +293,7 @@ function onOff(bool $on): string
   td { border-bottom: 1px solid var(--border); }
   tbody tr:nth-child(even) td { background: rgba(255, 255, 255, .015); }
   tbody tr:hover td { background: var(--surface-2); }
+  tbody tr:has(.row-sel) { cursor: pointer; }
   td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
   td.size { font-weight: 600; }
   .ago { display: block; font-size: 12px; color: var(--muted); }
@@ -986,7 +987,16 @@ function onOff(bool $on): string
   tbody.addEventListener('change', ev => { if (ev.target.classList.contains('row-sel')) updateBulk(); });
   tbody.addEventListener('click', ev => {
     const btn = ev.target.closest('button[data-op]');
-    if (btn) submitAction(btn.dataset.op, [btn.closest('tr').dataset.rk]);
+    if (btn) { submitAction(btn.dataset.op, [btn.closest('tr').dataset.rk]); return; }
+    // A click elsewhere on the row toggles its checkbox. Links, buttons and the
+    // checkbox itself keep their own behaviour, and dragging to select text doesn't toggle.
+    if (ev.target.closest('a, button, input, label, select, textarea')) return;
+    if (String(window.getSelection())) return;
+    const tr = ev.target.closest('tr');
+    const box = tr && tr.querySelector('.row-sel');
+    if (!box) return;
+    box.checked = !box.checked;
+    updateBulk();
   });
   bulk.addEventListener('click', ev => {
     const btn = ev.target.closest('button[data-bulk]');
