@@ -277,6 +277,10 @@ function onOff(bool $on): string
 
   /* Summary cards */
   .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-bottom: 20px; }
+  /* Wide screens: every card on one row, however many there are. Narrower screens wrap. */
+  @media (min-width: 1000px) {
+    .stats { grid-template-columns: none; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); }
+  }
   .card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; }
   .card h2 { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); margin: 0 0 6px; }
   .card .big { font-size: 24px; font-weight: 600; }
@@ -645,6 +649,16 @@ function onOff(bool $on): string
       <h2>Candidates</h2>
       <div class="big"><?= gb($v['candidate']['gb']) ?></div>
       <div class="sub"><?= number_format($v['candidate']['count']) ?> titles · <?= $v['protected']['count'] ?> protected · <?= $v['queued']['count'] ?> queued · <?= $v['keep']['count'] ?> kept</div>
+    </div>
+    <?php
+      // Everything in the queue: titles still counting down plus those whose countdown has ended.
+      $qCount = $v['queued']['count'] + $v['due']['count'];
+      $qGb    = $v['queued']['gb'] + $v['due']['gb'];
+    ?>
+    <div class="card">
+      <h2>Queued</h2>
+      <div class="big"><?= gb($qGb) ?></div>
+      <div class="sub"><?= number_format($qCount) ?> title<?= $qCount === 1 ? '' : 's' ?> · <?= gb($v['queued']['gb']) ?> counting down · <?= gb($v['due']['gb']) ?> due</div>
     </div>
     <div class="card<?= $v['due']['count'] ? ' danger' : '' ?>">
       <h2>Due for deletion</h2>
